@@ -22,6 +22,7 @@ class Installer
 
         $table_settings = $wpdb->prefix . 'spsync_settings';
         $table_logs = $wpdb->prefix . 'spsync_logs';
+        $table_items = $wpdb->prefix . 'spsync_items';
 
         // Note: dbDelta requires two spaces after PRIMARY KEY and lowercase table structures.
         $sql_settings = "CREATE TABLE $table_settings (
@@ -40,9 +41,23 @@ class Installer
             KEY level (level)
         ) $charset_collate;";
 
+        $sql_items = "CREATE TABLE $table_items (
+            id bigint(20) NOT NULL AUTO_INCREMENT,
+            backup_id varchar(50) NOT NULL,
+            filename varchar(255) NOT NULL,
+            filesize bigint(20) NOT NULL,
+            status varchar(20) NOT NULL DEFAULT 'queued',
+            retries int(11) NOT NULL DEFAULT 0,
+            checksum varchar(64) NOT NULL,
+            created_at datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            PRIMARY KEY  (id),
+            KEY backup_id (backup_id)
+        ) $charset_collate;";
+
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
         dbDelta($sql_settings);
         dbDelta($sql_logs);
+        dbDelta($sql_items);
 
         // Seed default configurations and generate initial secure REST API key if not present
         self::seed_default_settings();
