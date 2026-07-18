@@ -156,6 +156,71 @@ class GraphClient
     }
 
     /**
+     * Discover and cache the SharePoint Root Backup Folder ID.
+     * If the folder does not exist, it will be automatically created.
+     *
+     * @return string|false Root Folder ID or false on failure.
+     */
+    public static function get_root_folder_id()
+    {
+        $cached = Settings::get('root_folder_id');
+        if (!empty($cached)) {
+            return $cached;
+        }
+
+        $drive_id = self::get_drive_id();
+        if (!$drive_id) {
+            return false;
+        }
+
+        $root_folder = Settings::get('root_folder');
+        if (empty($root_folder)) {
+            $root_folder = 'WordPress Backups'; // Default standard folder
+        }
+
+        // Fetch children of the drive root (returns 200 OK, avoids triggering 404 logs)
+        $endpoint = sprintf('drives/%s/root/children', $drive_id);
+        $data = self::request($endpoint);
+
+        if ($data && !empty($data['value'])) {
+            foreach ($data['value'] as $item) {
+                if (strcasecmp($item['name'], $root_folder) === 0 && isset($item['folder'])) {
+                    $folder_id = $item['id'];
+                    Settings::set('root_folder_id', $folder_id);
+                    Logger::info('SharePoint Root Backup Folder ID resolved and cached.', [
+                        'folder'    => $root_folder,
+                        'folder_id' => $folder_id
+                    ]);
+                    return $folder_id;
+                }
+            }
+        }
+
+        // Folder was not found, attempt to create it
+        Logger::info("Root Backup Folder '$root_folder' not found. Attempting to create it on SharePoint...");
+
+        $body = [
+            'name'                              => $root_folder,
+            'folder'                            => new \stdClass(),
+            '@microsoft.graph.conflictBehavior' => 'fail'
+        ];
+
+        $create_data = self::request($endpoint, 'POST', $body);
+        if ($create_data && !empty($create_data['id'])) {
+            $folder_id = $create_data['id'];
+            Settings::set('root_folder_id', $folder_id);
+            Logger::info('SharePoint Root Backup Folder created and ID cached.', [
+                'folder'    => $root_folder,
+                'folder_id' => $folder_id
+            ]);
+            return $folder_id;
+        }
+
+        Logger::error("SharePoint Discovery Failed: Could not resolve or create Root Backup Folder '$root_folder'.");
+        return false;
+    }
+
+    /**
      * Tests SharePoint connection and configuration validity.
      *
      * @return array Status report contains 'success' and 'message'.
@@ -174,6 +239,7 @@ class GraphClient
         // Clear existing cache to guarantee a full network test
         Settings::delete('site_id');
         Settings::delete('drive_id');
+        Settings::delete('root_folder_id');
 
         // 2. Discover SharePoint Site
         $site_id = self::get_site_id();
@@ -193,9 +259,18 @@ class GraphClient
             ];
         }
 
+        // 4. Discover or Create Root Folder ID
+        $folder_id = self::get_root_folder_id();
+        if (!$folder_id) {
+            return [
+                'success' => false,
+                'message' => 'Could not locate or create the Root Backup Folder.'
+            ];
+        }
+
         return [
             'success' => true,
-            'message' => 'Connection verified successfully! Authenticated with Microsoft Entra ID and reached SharePoint library.'
+            'message' => 'Connection verified successfully! Authenticated with Microsoft Entra ID, reached SharePoint, and confirmed backup folder.'
         ];
     }
 }
