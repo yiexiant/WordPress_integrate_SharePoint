@@ -163,12 +163,27 @@ class RestController extends WP_REST_Controller
         $free_space = function_exists('disk_free_space') ? @disk_free_space(ABSPATH) : false;
         $total_space = function_exists('disk_total_space') ? @disk_total_space(ABSPATH) : false;
 
+        // Calculate database size
+        $db_size = 0;
+        $tables_status = $wpdb->get_results("SHOW TABLE STATUS LIKE '" . $wpdb->prefix . "%'", ARRAY_A);
+        if (!empty($tables_status)) {
+            foreach ($tables_status as $table_status) {
+                $db_size += (int) ($table_status['Data_length'] ?? 0) + (int) ($table_status['Index_length'] ?? 0);
+            }
+        }
+        $db_size_format = $db_size > 0 ? size_format($db_size) : 'unknown';
+
+        // Retrieve root folder setting
+        $sharepoint_folder = \SPSync\Helpers\Settings::get('root_folder', 'WordPress Backups');
+
         return new WP_REST_Response([
             'wordpress_version' => $wp_version,
             'php_version'       => PHP_VERSION,
             'plugin_version'    => SPSYNC_VERSION,
             'memory_limit'      => $memory_limit,
             'upload_max'        => $upload_max,
+            'database_size'     => $db_size_format,
+            'sharepoint_folder' => $sharepoint_folder,
             'disk'              => [
                 'free_bytes'  => $free_space,
                 'total_bytes' => $total_space,
