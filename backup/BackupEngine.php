@@ -142,6 +142,9 @@ class BackupEngine
             'total_queue_items' => count($queue_items)
         ]);
 
+        // Trigger the async queue runner to process uploads in the background
+        \SPSync\Queue\QueueManager::trigger();
+
         return $backup_id;
     }
 

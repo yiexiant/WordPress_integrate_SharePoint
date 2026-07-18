@@ -48,6 +48,9 @@ add_action('plugins_loaded', function () {
     
     // Initialize Logging system
     SPSync\Logger\Logger::init();
+
+    // Initialize Background Queue Manager
+    SPSync\Queue\QueueManager::init();
     
     // Initialize Admin Settings Page
     if (is_admin()) {

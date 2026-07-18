@@ -53,6 +53,14 @@ class RestController extends WP_REST_Controller
                 'permission_callback' => [ $controller, 'check_auth' ]
             ]
         ]);
+
+        register_rest_route(self::NAMESPACE, '/backup/status', [
+            [
+                'methods'             => WP_REST_Server::READABLE,
+                'callback'            => [ $controller, 'get_backup_status' ],
+                'permission_callback' => [ $controller, 'check_auth' ]
+            ]
+        ]);
     }
 
     /**
@@ -143,6 +151,82 @@ class RestController extends WP_REST_Controller
                 'free_format' => $free_space ? size_format($free_space) : 'unknown',
                 'total_format'=> $total_space ? size_format($total_space) : 'unknown',
             ]
+        ], 200);
+    }
+
+    /**
+     * Endpoint callback: GET /spsync/v1/backup/status
+     */
+    public function get_backup_status($request)
+    {
+        global $wpdb;
+        $table = $wpdb->prefix . 'spsync_items';
+
+        // Check if queue table exists
+        if ($wpdb->get_var("SHOW TABLES LIKE '$table'") === null) {
+            return new WP_REST_Response([
+                'status'  => 'idle',
+                'message' => 'Queue database table does not exist.'
+            ], 200);
+        }
+
+        // Get the latest backup job ID active in the queue
+        $latest_backup_id = $wpdb->get_var("SELECT backup_id FROM $table ORDER BY id DESC LIMIT 1");
+        
+        if (empty($latest_backup_id)) {
+            return new WP_REST_Response([
+                'status'  => 'idle',
+                'message' => 'No backups have been scheduled or run yet.'
+            ], 200);
+        }
+
+        // Count statuses for this backup ID
+        $counts = $wpdb->get_results(
+            $wpdb->prepare("SELECT status, COUNT(*) as qty FROM $table WHERE backup_id = %s GROUP BY status", $latest_backup_id),
+            ARRAY_A
+        );
+
+        $statuses = [
+            'queued'    => 0,
+            'uploading' => 0,
+            'done'      => 0,
+            'error'     => 0
+        ];
+
+        $total_files = 0;
+        foreach ($counts as $row) {
+            $statuses[$row['status']] = (int) $row['qty'];
+            $total_files += (int) $row['qty'];
+        }
+
+        $uploaded_files = $statuses['done'];
+        $failed_files   = $statuses['error'];
+        $pending_files  = $statuses['queued'] + $statuses['uploading'];
+
+        // Determine current phase status
+        if ($pending_files > 0) {
+            $status = 'uploading';
+            $phase  = 'Uploading';
+        } elseif ($failed_files > 0) {
+            $status = 'failed';
+            $phase  = 'Failed';
+        } else {
+            $status = 'completed';
+            $phase  = 'Completed';
+        }
+
+        // Compute progress percent
+        $progress = ($total_files > 0) ? round(($uploaded_files / $total_files) * 100) : 0;
+
+        return new WP_REST_Response([
+            'backup_id'      => $latest_backup_id,
+            'status'         => $status,
+            'progress'       => $progress,
+            'current_phase'  => $phase,
+            'total_files'    => $total_files,
+            'uploaded_files' => $uploaded_files,
+            'failed_files'   => $failed_files,
+            'pending_files'  => $pending_files
         ], 200);
     }
 }
