@@ -61,6 +61,30 @@ class RestController extends WP_REST_Controller
                 'permission_callback' => [ $controller, 'check_auth' ]
             ]
         ]);
+
+        register_rest_route(self::NAMESPACE, '/backup/start', [
+            [
+                'methods'             => WP_REST_Server::CREATABLE,
+                'callback'            => [ $controller, 'start_backup' ],
+                'permission_callback' => [ $controller, 'check_auth' ]
+            ]
+        ]);
+
+        register_rest_route(self::NAMESPACE, '/restore/start', [
+            [
+                'methods'             => WP_REST_Server::CREATABLE,
+                'callback'            => [ $controller, 'start_restore' ],
+                'permission_callback' => [ $controller, 'check_auth' ]
+            ]
+        ]);
+
+        register_rest_route(self::NAMESPACE, '/logs', [
+            [
+                'methods'             => WP_REST_Server::READABLE,
+                'callback'            => [ $controller, 'get_logs' ],
+                'permission_callback' => [ $controller, 'check_auth' ]
+            ]
+        ]);
     }
 
     /**
@@ -228,5 +252,69 @@ class RestController extends WP_REST_Controller
             'failed_files'   => $failed_files,
             'pending_files'  => $pending_files
         ], 200);
+    }
+
+    /**
+     * Endpoint callback: POST /spsync/v1/backup/start
+     */
+    public function start_backup($request)
+    {
+        $backup_id = 'spsync-backup-' . current_time('Ymd-His');
+        
+        // Trigger backup locally and enqueue upload in background
+        if (function_exists('as_enqueue_async_action')) {
+            as_enqueue_async_action(\SPSync\Scheduler\Scheduler::EVENT_HOOK);
+        } else {
+            wp_schedule_single_event(time() + 2, \SPSync\Scheduler\Scheduler::EVENT_HOOK);
+        }
+
+        return new WP_REST_Response([
+            'success'   => true,
+            'backup_id' => $backup_id,
+            'message'   => 'Backup job successfully enqueued in the background.'
+        ], 202);
+    }
+
+    /**
+     * Endpoint callback: POST /spsync/v1/restore/start
+     */
+    public function start_restore($request)
+    {
+        $backup_id = $request->get_param('backup_id');
+        if (empty($backup_id)) {
+            return new \WP_Error('missing_parameter', 'Missing backup_id parameter.', [ 'status' => 400 ]);
+        }
+
+        $restore_job_id = \SPSync\Restore\RestoreManager::start_restore($backup_id);
+        if (!$restore_job_id) {
+            return new \WP_Error('restore_failed', 'Could not initiate restore job.', [ 'status' => 500 ]);
+        }
+
+        return new WP_REST_Response([
+            'success'        => true,
+            'restore_job_id' => $restore_job_id,
+            'message'        => 'Restore job successfully enqueued in the background.'
+        ], 202);
+    }
+
+    /**
+     * Endpoint callback: GET /spsync/v1/logs
+     */
+    public function get_logs($request)
+    {
+        global $wpdb;
+        $table = $wpdb->prefix . 'spsync_logs';
+        
+        $limit = min((int) $request->get_param('limit'), 100);
+        if ($limit <= 0) {
+            $limit = 50;
+        }
+
+        $logs = $wpdb->get_results($wpdb->prepare(
+            "SELECT * FROM $table ORDER BY id DESC LIMIT %d",
+            $limit
+        ), ARRAY_A);
+
+        return new WP_REST_Response($logs, 200);
     }
 }
