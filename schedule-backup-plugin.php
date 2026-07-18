@@ -62,4 +62,7 @@ add_action('plugins_loaded', function () {
     
     // Initialize Backup Scheduler
     SPSync\Scheduler\Scheduler::init();
+
+    // Initialize Restore Subsystem
+    SPSync\Restore\RestoreManager::init();
 });

@@ -23,6 +23,7 @@ class Installer
         $table_settings = $wpdb->prefix . 'spsync_settings';
         $table_logs = $wpdb->prefix . 'spsync_logs';
         $table_items = $wpdb->prefix . 'spsync_items';
+        $table_restore = $wpdb->prefix . 'spsync_restore_items';
 
         // Note: dbDelta requires two spaces after PRIMARY KEY and lowercase table structures.
         $sql_settings = "CREATE TABLE $table_settings (
@@ -54,10 +55,24 @@ class Installer
             KEY backup_id (backup_id)
         ) $charset_collate;";
 
+        $sql_restore = "CREATE TABLE $table_restore (
+            id bigint(20) NOT NULL AUTO_INCREMENT,
+            restore_job_id varchar(50) NOT NULL,
+            filename varchar(255) NOT NULL,
+            status varchar(20) NOT NULL DEFAULT 'waiting',
+            retries int(11) NOT NULL DEFAULT 0,
+            downloaded tinyint(1) NOT NULL DEFAULT 0,
+            restored tinyint(1) NOT NULL DEFAULT 0,
+            created_at datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            PRIMARY KEY  (id),
+            KEY restore_job_id (restore_job_id)
+        ) $charset_collate;";
+
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
         dbDelta($sql_settings);
         dbDelta($sql_logs);
         dbDelta($sql_items);
+        dbDelta($sql_restore);
 
         // Seed default configurations and generate initial secure REST API key if not present
         self::seed_default_settings();
