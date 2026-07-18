@@ -88,7 +88,9 @@ class Installer
             'site_url'         => '',
             'document_library' => '',
             'root_folder'      => 'WordPress Backups',
-            'encrypt_secret'   => '1'
+            'encrypt_secret'   => '1',
+            'retention_limit'  => '30',
+            'backup_frequency' => 'manual'
         ];
 
         foreach ($defaults as $name => $val) {

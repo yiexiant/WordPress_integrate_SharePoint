@@ -27,6 +27,23 @@ class BackupEngine
             @ignore_user_abort(true);
         }
 
+        // Concurrency locking check
+        $lock = Settings::get('backup_running');
+        if (!empty($lock)) {
+            $lock_time = (int) $lock;
+            $two_hours_ago = time() - (2 * HOUR_IN_SECONDS);
+            if ($lock_time > $two_hours_ago) {
+                Logger::warning('Backup abort: Another backup process is currently running.', [
+                    'lock_acquired_at' => date('Y-m-d H:i:s', $lock_time)
+                ]);
+                return false;
+            }
+            Logger::info('Stale backup lock detected and overridden.');
+        }
+
+        // Set concurrency lock
+        Settings::set('backup_running', (string) time());
+
         // Generate unique backup ID matching Phase 2 structure
         $backup_id = 'spsync-backup-' . current_time('Ymd-His');
         Logger::info("Initializing backup orchestrator: $backup_id");
@@ -49,6 +66,7 @@ class BackupEngine
         $db_success = DatabaseBackup::export($db_file);
         if (!$db_success) {
             Logger::error('Backup Failed: Database SQL export failed.');
+            Settings::delete('backup_running');
             return false;
         }
 
@@ -56,6 +74,7 @@ class BackupEngine
         $scanned_files = FileScanner::scan();
         if (empty($scanned_files)) {
             Logger::error('Backup Failed: Directory scanner found no matching assets.');
+            Settings::delete('backup_running');
             return false;
         }
 
@@ -63,6 +82,7 @@ class BackupEngine
         $zip_parts = ZipBuilder::build($scanned_files, $base_dir);
         if (empty($zip_parts)) {
             Logger::error('Backup Failed: ZIP packaging and compression failed.');
+            Settings::delete('backup_running');
             return false;
         }
 
@@ -103,6 +123,7 @@ class BackupEngine
         
         if (file_put_contents($manifest_file, $manifest_json) === false) {
             Logger::error('Backup Failed: Could not write manifest.json file.');
+            Settings::delete('backup_running');
             return false;
         }
 

@@ -82,6 +82,16 @@ class SettingsPage
             Settings::set('root_folder', sanitize_text_field($_POST['root_folder']));
             Settings::set('encrypt_secret', isset($_POST['encrypt_secret']) ? '1' : '0');
 
+            $old_frequency = Settings::get('backup_frequency', 'manual');
+            $new_frequency = sanitize_text_field($_POST['backup_frequency']);
+            Settings::set('backup_frequency', $new_frequency);
+            Settings::set('retention_limit', sanitize_text_field($_POST['retention_limit']));
+
+            // Update cron schedule if changed
+            if ($old_frequency !== $new_frequency) {
+                \SPSync\Scheduler\Scheduler::update_schedule($new_frequency);
+            }
+
             // Force regenerate API Key if requested
             if (isset($_POST['regenerate_api_key'])) {
                 if (function_exists('random_bytes')) {
@@ -112,6 +122,9 @@ class SettingsPage
         $root_folder      = Settings::get('root_folder');
         $encrypt_secret   = Settings::get('encrypt_secret', '1');
         $api_key          = Settings::get('api_key');
+        
+        $backup_frequency = Settings::get('backup_frequency', 'manual');
+        $retention_limit  = Settings::get('retention_limit', '30');
 
         $masked_secret = empty($client_secret) ? '' : '••••••••••••••••••••••••••••••••';
         $is_https = is_ssl();
@@ -184,6 +197,37 @@ class SettingsPage
                         <td>
                             <input name="root_folder" type="text" id="root_folder" value="<?php echo esc_attr($root_folder); ?>" class="regular-text" />
                             <p class="description"><?php esc_html_e('Name of the folder inside the document library where backups will go.', 'schedule-backup-plugin'); ?></p>
+                        </td>
+                    </tr>
+                </table>
+
+                <h2><?php esc_html_e('Backup Automation & Retention', 'schedule-backup-plugin'); ?></h2>
+                <table class="form-table">
+                    <tr>
+                        <th scope="row"><label for="backup_frequency"><?php esc_html_e('Backup Schedule', 'schedule-backup-plugin'); ?></label></th>
+                        <td>
+                            <select name="backup_frequency" id="backup_frequency">
+                                <option value="manual" <?php selected($backup_frequency, 'manual'); ?>><?php esc_html_e('Manual (Disabled)', 'schedule-backup-plugin'); ?></option>
+                                <option value="hourly" <?php selected($backup_frequency, 'hourly'); ?>><?php esc_html_e('Once Hourly', 'schedule-backup-plugin'); ?></option>
+                                <option value="daily" <?php selected($backup_frequency, 'daily'); ?>><?php esc_html_e('Once Daily', 'schedule-backup-plugin'); ?></option>
+                                <option value="weekly" <?php selected($backup_frequency, 'weekly'); ?>><?php esc_html_e('Once Weekly', 'schedule-backup-plugin'); ?></option>
+                                <option value="monthly" <?php selected($backup_frequency, 'monthly'); ?>><?php esc_html_e('Once Monthly', 'schedule-backup-plugin'); ?></option>
+                            </select>
+                            <p class="description"><?php esc_html_e('Select the recurrence frequency for scheduled backups.', 'schedule-backup-plugin'); ?></p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><label for="retention_limit"><?php esc_html_e('Backup Retention Limit', 'schedule-backup-plugin'); ?></label></th>
+                        <td>
+                            <select name="retention_limit" id="retention_limit">
+                                <option value="5" <?php selected($retention_limit, '5'); ?>><?php esc_html_e('Keep last 5 backups', 'schedule-backup-plugin'); ?></option>
+                                <option value="10" <?php selected($retention_limit, '10'); ?>><?php esc_html_e('Keep last 10 backups', 'schedule-backup-plugin'); ?></option>
+                                <option value="30" <?php selected($retention_limit, '30'); ?>><?php esc_html_e('Keep last 30 backups (Default)', 'schedule-backup-plugin'); ?></option>
+                                <option value="50" <?php selected($retention_limit, '50'); ?>><?php esc_html_e('Keep last 50 backups', 'schedule-backup-plugin'); ?></option>
+                                <option value="100" <?php selected($retention_limit, '100'); ?>><?php esc_html_e('Keep last 100 backups', 'schedule-backup-plugin'); ?></option>
+                                <option value="0" <?php selected($retention_limit, '0'); ?>><?php esc_html_e('Unlimited (Never delete)', 'schedule-backup-plugin'); ?></option>
+                            </select>
+                            <p class="description"><?php esc_html_e('Select how many backups should be retained in SharePoint before pruning the oldest folder.', 'schedule-backup-plugin'); ?></p>
                         </td>
                     </tr>
                 </table>

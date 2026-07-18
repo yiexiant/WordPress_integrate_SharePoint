@@ -107,7 +107,12 @@ class QueueManager
             } else {
                 Logger::info('All queued backup files uploaded to SharePoint successfully! Cleaning up local files.');
                 self::prune_local_backup_files($items[0]->backup_id);
+                
+                // Enforce backup retention policies
+                \SPSync\Backup\Retention::enforce();
             }
+            // Release the concurrency lock
+            Settings::delete('backup_running');
         }
     }
 

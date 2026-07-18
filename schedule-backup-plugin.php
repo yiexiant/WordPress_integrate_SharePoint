@@ -59,4 +59,7 @@ add_action('plugins_loaded', function () {
     
     // Initialize REST API Endpoints
     SPSync\Api\RestController::init();
+    
+    // Initialize Backup Scheduler
+    SPSync\Scheduler\Scheduler::init();
 });
