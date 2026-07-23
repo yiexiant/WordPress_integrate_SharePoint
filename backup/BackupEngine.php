@@ -15,7 +15,7 @@ class BackupEngine
      *
      * @return string|false Backup ID on success, or false on failure.
      */
-    public static function run()
+    public static function run($force_override = false)
     {
         global $wp_version, $wpdb;
 
@@ -29,10 +29,10 @@ class BackupEngine
 
         // Concurrency locking check
         $lock = Settings::get('backup_running');
-        if (!empty($lock)) {
+        if (!empty($lock) && !$force_override) {
             $lock_time = (int) $lock;
-            $two_hours_ago = time() - (2 * HOUR_IN_SECONDS);
-            if ($lock_time > $two_hours_ago) {
+            $ten_mins_ago = time() - (10 * MINUTE_IN_SECONDS);
+            if ($lock_time > $ten_mins_ago) {
                 Logger::warning('Backup abort: Another backup process is currently running.', [
                     'lock_acquired_at' => date('Y-m-d H:i:s', $lock_time)
                 ]);

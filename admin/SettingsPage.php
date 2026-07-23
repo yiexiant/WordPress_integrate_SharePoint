@@ -20,6 +20,7 @@ class SettingsPage
         add_action('admin_menu', [ __CLASS__, 'add_menu_page' ]);
         add_action('admin_post_spsync_test_connection', [ __CLASS__, 'handle_connection_test' ]);
         add_action('admin_post_spsync_run_manual_backup', [ __CLASS__, 'handle_manual_backup' ]);
+        add_action('admin_post_spsync_reset_lock', [ __CLASS__, 'handle_reset_lock' ]);
     }
 
     /**
@@ -69,7 +70,10 @@ class SettingsPage
 
         check_admin_referer('spsync_manual_backup_action');
 
-        $backup_id = \SPSync\Backup\BackupEngine::run();
+        // Clear stale lock before initiating manual test run
+        Settings::delete('backup_running');
+
+        $backup_id = \SPSync\Backup\BackupEngine::run(true);
         
         if ($backup_id) {
             $message = urlencode("Manual backup successfully initiated! (Backup ID: $backup_id). Live progress is logged in System Logs.");
@@ -78,6 +82,23 @@ class SettingsPage
             $message = urlencode("Could not start manual backup. Another backup operation may already be in progress.");
             wp_safe_redirect(admin_url('admin.php?page=' . self::MENU_SLUG . '&tab=overview&spsync_notice=error&spsync_msg=' . $message));
         }
+        exit;
+    }
+
+    /**
+     * Handle manual clearing of stale backup lock.
+     */
+    public static function handle_reset_lock()
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die(__('You do not have permission to access this page.', 'schedule-backup-plugin'));
+        }
+
+        check_admin_referer('spsync_reset_lock_action');
+
+        Settings::delete('backup_running');
+        $message = urlencode("Stale backup lock successfully cleared! You can now run a new backup.");
+        wp_safe_redirect(admin_url('admin.php?page=' . self::MENU_SLUG . '&tab=overview&spsync_notice=success&spsync_msg=' . $message));
         exit;
     }
 
@@ -358,6 +379,13 @@ class SettingsPage
                             <?php wp_nonce_field('spsync_manual_backup_action'); ?>
                             <button type="submit" class="spsync-btn-primary" style="width: 100%; justify-content: center;">
                                 <span class="dashicons dashicons-controls-play"></span> Run Backup Now (Test Workflow)
+                            </button>
+                        </form>
+                        <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-top: 10px;">
+                            <input type="hidden" name="action" value="spsync_reset_lock" />
+                            <?php wp_nonce_field('spsync_reset_lock_action'); ?>
+                            <button type="submit" class="spsync-btn-secondary" style="width: 100%; justify-content: center; font-size: 0.85rem;">
+                                <span class="dashicons dashicons-unlock"></span> Clear / Reset Stale Lock
                             </button>
                         </form>
                     </div>
