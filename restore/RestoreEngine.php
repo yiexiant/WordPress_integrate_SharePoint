@@ -194,19 +194,41 @@ class RestoreEngine
         }
 
         $zip_file = rtrim($rollback_dir, '/') . '/rollback_files.zip';
-        $zip = new ZipArchive();
-        if ($zip->open($zip_file, ZipArchive::CREATE | ZipArchive::OVERWRITE) === true) {
-            $root_path = str_replace('\\', '/', ABSPATH);
-            foreach ($files_to_backup as $file) {
-                $normalized = str_replace('\\', '/', $file);
-                $relative = ltrim(substr($normalized, strlen($root_path)), '/');
-                $zip->addFile($file, $relative);
+        if (class_exists('\ZipArchive')) {
+            $zip = new \ZipArchive();
+            if ($zip->open($zip_file, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) === true) {
+                $root_path = str_replace('\\', '/', ABSPATH);
+                foreach ($files_to_backup as $file) {
+                    $normalized = str_replace('\\', '/', $file);
+                    $relative = ltrim(substr($normalized, strlen($root_path)), '/');
+                    $zip->addFile($file, $relative);
+                }
+                $zip->close();
+                Logger::info('Rollback Snapshot files packaged successfully.');
+            } else {
+                Logger::error('Rollback Snapshot Failed: Could not open rollback zip.');
+                return false;
             }
-            $zip->close();
-            Logger::info('Rollback Snapshot files packaged successfully.');
         } else {
-            Logger::error('Rollback Snapshot Failed: Could not open rollback zip.');
-            return false;
+            if (!class_exists('PclZip')) {
+                $pclzip_file = ABSPATH . 'wp-admin/includes/class-pclzip.php';
+                if (file_exists($pclzip_file)) {
+                    require_once $pclzip_file;
+                }
+            }
+            if (class_exists('PclZip')) {
+                $archive = new \PclZip($zip_file);
+                $v_list = $archive->create($files_to_backup, PCLZIP_OPT_REMOVE_PATH, ABSPATH);
+                if ($v_list != 0) {
+                    Logger::info('Rollback Snapshot files packaged successfully (PclZip).');
+                } else {
+                    Logger::error('Rollback Snapshot Failed (PclZip): ' . $archive->errorInfo(true));
+                    return false;
+                }
+            } else {
+                Logger::error('Rollback Snapshot Failed: Neither ZipArchive nor PclZip is available.');
+                return false;
+            }
         }
 
         return true;
