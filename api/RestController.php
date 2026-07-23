@@ -155,8 +155,15 @@ class RestController extends WP_REST_Controller
      */
     public function get_system_info($request)
     {
-        global $wp_version;
+        global $wp_version, $wpdb;
         
+        if (!function_exists('size_format')) {
+            $formatting_file = ABSPATH . 'wp-includes/formatting.php';
+            if (file_exists($formatting_file)) {
+                require_once $formatting_file;
+            }
+        }
+
         $memory_limit = ini_get('memory_limit');
         $upload_max   = ini_get('upload_max_filesize');
         
@@ -165,19 +172,28 @@ class RestController extends WP_REST_Controller
 
         // Calculate database size
         $db_size = 0;
-        $tables_status = $wpdb->get_results("SHOW TABLE STATUS LIKE '" . $wpdb->prefix . "%'", ARRAY_A);
-        if (!empty($tables_status)) {
-            foreach ($tables_status as $table_status) {
-                $db_size += (int) ($table_status['Data_length'] ?? 0) + (int) ($table_status['Index_length'] ?? 0);
+        if ($wpdb) {
+            $tables_status = $wpdb->get_results("SHOW TABLE STATUS LIKE '" . $wpdb->prefix . "%'", ARRAY_A);
+            if (!empty($tables_status) && is_array($tables_status)) {
+                foreach ($tables_status as $table_status) {
+                    $db_size += (int) ($table_status['Data_length'] ?? 0) + (int) ($table_status['Index_length'] ?? 0);
+                }
             }
         }
-        $db_size_format = $db_size > 0 ? size_format($db_size) : 'unknown';
+
+        $format_bytes = function($bytes) {
+            if (!$bytes || $bytes <= 0) return 'unknown';
+            if (function_exists('size_format')) return size_format($bytes);
+            return round($bytes / (1024 * 1024), 2) . ' MB';
+        };
+
+        $db_size_format = $format_bytes($db_size);
 
         // Retrieve root folder setting
         $sharepoint_folder = \SPSync\Helpers\Settings::get('root_folder', 'WordPress Backups');
 
         return new WP_REST_Response([
-            'wordpress_version' => $wp_version,
+            'wordpress_version' => $wp_version ?? 'Unknown',
             'php_version'       => PHP_VERSION,
             'plugin_version'    => SPSYNC_VERSION,
             'memory_limit'      => $memory_limit,
@@ -187,8 +203,8 @@ class RestController extends WP_REST_Controller
             'disk'              => [
                 'free_bytes'  => $free_space,
                 'total_bytes' => $total_space,
-                'free_format' => $free_space ? size_format($free_space) : 'unknown',
-                'total_format'=> $total_space ? size_format($total_space) : 'unknown',
+                'free_format' => $format_bytes($free_space),
+                'total_format'=> $format_bytes($total_space),
             ]
         ], 200);
     }
