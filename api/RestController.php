@@ -253,21 +253,28 @@ class RestController extends WP_REST_Controller
             'queued'    => 0,
             'uploading' => 0,
             'done'      => 0,
-            'error'     => 0
+            'error'     => 0,
+            'missing'   => 0
         ];
 
         $total_files = 0;
         foreach ($counts as $row) {
-            $statuses[$row['status']] = (int) $row['qty'];
+            if (isset($statuses[$row['status']])) {
+                $statuses[$row['status']] = (int) $row['qty'];
+            }
             $total_files += (int) $row['qty'];
         }
 
         $uploaded_files = $statuses['done'];
         $failed_files   = $statuses['error'];
+        $missing_files  = $statuses['missing'];
         $pending_files  = $statuses['queued'] + $statuses['uploading'];
 
         // Determine current phase status
-        if ($pending_files > 0) {
+        if ($missing_files > 0) {
+            $status = 'missing';
+            $phase  = 'Missing on Remote';
+        } elseif ($pending_files > 0) {
             $status = 'uploading';
             $phase  = 'Uploading';
         } elseif ($failed_files > 0) {
@@ -396,6 +403,8 @@ class RestController extends WP_REST_Controller
                 $verified[] = $backup_id;
             } else {
                 $missing[] = $backup_id;
+                // Update database items to status missing
+                $wpdb->update($table, [ 'status' => 'missing' ], [ 'backup_id' => $backup_id ]);
             }
         }
 
