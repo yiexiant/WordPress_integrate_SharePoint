@@ -37,17 +37,31 @@ class RestoreEngine
 
             Logger::info("Extracting archive part: " . basename($zip_file));
 
-            $zip = new ZipArchive();
-            if ($zip->open($zip_file) === true) {
-                if ($zip->extractTo($dest_dir) === false) {
-                    Logger::error("Extraction failed for archive: " . basename($zip_file));
+            if (class_exists('\ZipArchive')) {
+                $zip = new \ZipArchive();
+                if ($zip->open($zip_file) === true) {
+                    if ($zip->extractTo($dest_dir) === false) {
+                        Logger::error("Extraction failed for archive: " . basename($zip_file));
+                        $zip->close();
+                        return false;
+                    }
                     $zip->close();
+                } else {
+                    Logger::error("Could not open ZIP file for extraction: " . basename($zip_file));
                     return false;
                 }
-                $zip->close();
             } else {
-                Logger::error("Could not open ZIP file for extraction: " . basename($zip_file));
-                return false;
+                if (!class_exists('PclZip')) {
+                    $pclzip_file = ABSPATH . 'wp-admin/includes/class-pclzip.php';
+                    if (file_exists($pclzip_file)) {
+                        require_once $pclzip_file;
+                    }
+                }
+                $archive = new \PclZip($zip_file);
+                if ($archive->extract(PCLZIP_OPT_PATH, $dest_dir) == 0) {
+                    Logger::error("Extraction failed (PclZip) for archive: " . basename($zip_file));
+                    return false;
+                }
             }
         }
 

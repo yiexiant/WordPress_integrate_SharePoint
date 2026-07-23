@@ -1,7 +1,6 @@
 <?php
 namespace SPSync\Backup;
 
-use ZipArchive;
 use SPSync\Logger\Logger;
 
 if (!defined('ABSPATH')) {
@@ -31,8 +30,8 @@ class ZipBuilder
             wp_mkdir_p($output_dir);
         }
 
-        $created_parts = [];
-        if (!class_exists('ZipArchive')) {
+        $has_zip_archive = class_exists('\ZipArchive');
+        if (!$has_zip_archive) {
             if (!class_exists('PclZip')) {
                 $pclzip_file = ABSPATH . 'wp-admin/includes/class-pclzip.php';
                 if (file_exists($pclzip_file)) {
@@ -43,59 +42,68 @@ class ZipBuilder
                 Logger::error('ZIP Builder Failed: Neither ZipArchive nor PclZip extension is available on this server.');
                 return [];
             }
+            Logger::info('ZipArchive extension not loaded in web server. Using WordPress built-in PclZip engine fallback.');
         }
 
-        $zip = new ZipArchive();
-        $current_zip_file = sprintf('%s/backup_part%03d.zip', rtrim($output_dir, '/'), $part_index);
-        
-        if ($zip->open($current_zip_file, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
-            Logger::error('ZIP Builder Failed: Could not open ZIP file for writing.', [ 'file' => $current_zip_file ]);
-            return [];
-        }
-
-        $created_parts[] = $current_zip_file;
+        $created_parts = [];
         $root_path = str_replace('\\', '/', ABSPATH);
 
+        // Group files into split batches
+        $batches = [];
+        $current_batch = [];
+        $current_batch_size = 0;
+
         foreach ($files as $filepath) {
-            $normalized_filepath = str_replace('\\', '/', $filepath);
-            
             $filesize = @filesize($filepath);
             if ($filesize === false) {
                 continue;
             }
 
-            // Check if adding this file exceeds the chunk threshold.
-            // Split only if the current ZIP already contains elements.
-            if ($current_zip_size > 0 && ($current_zip_size + $filesize) > $split_limit) {
-                $zip->close();
-                
-                $part_index++;
-                $current_zip_file = sprintf('%s/backup_part%03d.zip', rtrim($output_dir, '/'), $part_index);
-                
-                $zip = new ZipArchive();
-                if ($zip->open($current_zip_file, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
-                    Logger::error('ZIP Builder Failed: Could not open next ZIP part for writing.', [ 'file' => $current_zip_file ]);
-                    return $created_parts;
-                }
-                
-                $created_parts[] = $current_zip_file;
-                $current_zip_size = 0;
+            if ($current_batch_size > 0 && ($current_batch_size + $filesize) > $split_limit) {
+                $batches[] = $current_batch;
+                $current_batch = [];
+                $current_batch_size = 0;
             }
 
-            // Calculate relative path inside the zip file structure (relative to WordPress root)
-            $relative_name = $normalized_filepath;
-            if (strpos($normalized_filepath, $root_path) === 0) {
-                $relative_name = ltrim(substr($normalized_filepath, strlen($root_path)), '/');
-            }
-
-            if ($zip->addFile($filepath, $relative_name)) {
-                $current_zip_size += $filesize;
-            } else {
-                Logger::warning('ZIP Builder: Could not add file to ZIP.', [ 'file' => $filepath ]);
-            }
+            $current_batch[] = $filepath;
+            $current_batch_size += $filesize;
         }
 
-        $zip->close();
+        if (!empty($current_batch)) {
+            $batches[] = $current_batch;
+        }
+
+        // Build zip for each batch
+        foreach ($batches as $index => $batch_files) {
+            $part_num = $index + 1;
+            $zip_file_path = sprintf('%s/backup_part%03d.zip', rtrim($output_dir, '/'), $part_num);
+
+            if ($has_zip_archive) {
+                $zip = new \ZipArchive();
+                if ($zip->open($zip_file_path, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) === true) {
+                    foreach ($batch_files as $filepath) {
+                        $normalized = str_replace('\\', '/', $filepath);
+                        $relative_name = (strpos($normalized, $root_path) === 0) 
+                            ? ltrim(substr($normalized, strlen($root_path)), '/') 
+                            : $normalized;
+                        $zip->addFile($filepath, $relative_name);
+                    }
+                    $zip->close();
+                    $created_parts[] = $zip_file_path;
+                } else {
+                    Logger::error('ZIP Builder Failed: Could not open ZIP file for writing.', ['file' => $zip_file_path]);
+                }
+            } else {
+                // Use WordPress native PclZip engine fallback
+                $archive = new \PclZip($zip_file_path);
+                $v_list = $archive->create($batch_files, PCLZIP_OPT_REMOVE_PATH, ABSPATH);
+                if ($v_list != 0) {
+                    $created_parts[] = $zip_file_path;
+                } else {
+                    Logger::error('ZIP Builder Failed (PclZip): ' . $archive->errorInfo(true), ['file' => $zip_file_path]);
+                }
+            }
+        }
 
         Logger::info('ZIP compilation complete. Split archives created successfully.', [
             'parts_count' => count($created_parts),
