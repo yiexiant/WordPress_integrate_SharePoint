@@ -32,9 +32,19 @@ class ZipBuilder
         }
 
         $created_parts = [];
-        $part_index = 1;
-        $current_zip_size = 0;
-        
+        if (!class_exists('ZipArchive')) {
+            if (!class_exists('PclZip')) {
+                $pclzip_file = ABSPATH . 'wp-admin/includes/class-pclzip.php';
+                if (file_exists($pclzip_file)) {
+                    require_once $pclzip_file;
+                }
+            }
+            if (!class_exists('PclZip')) {
+                Logger::error('ZIP Builder Failed: Neither ZipArchive nor PclZip extension is available on this server.');
+                return [];
+            }
+        }
+
         $zip = new ZipArchive();
         $current_zip_file = sprintf('%s/backup_part%03d.zip', rtrim($output_dir, '/'), $part_index);
         
