@@ -85,6 +85,14 @@ class RestController extends WP_REST_Controller
                 'permission_callback' => [ $controller, 'check_auth' ]
             ]
         ]);
+
+        register_rest_route(self::NAMESPACE, '/backups/verify', [
+            [
+                'methods'             => WP_REST_Server::READABLE,
+                'callback'            => [ $controller, 'verify_remote_backups' ],
+                'permission_callback' => [ $controller, 'check_auth' ]
+            ]
+        ]);
     }
 
     /**
@@ -347,5 +355,54 @@ class RestController extends WP_REST_Controller
         ), ARRAY_A);
 
         return new WP_REST_Response($logs, 200);
+    }
+
+    /**
+     * Endpoint callback: GET /spsync/v1/backups/verify
+     */
+    public function verify_remote_backups($request)
+    {
+        global $wpdb;
+        $table = $wpdb->prefix . 'spsync_items';
+
+        if ($wpdb->get_var("SHOW TABLES LIKE '$table'") === null) {
+            return new WP_REST_Response([
+                'success'          => true,
+                'verified_backups' => [],
+                'missing_backups'  => []
+            ], 200);
+        }
+
+        $backup_ids = $wpdb->get_col("SELECT DISTINCT backup_id FROM $table WHERE backup_id IS NOT NULL AND backup_id != ''");
+
+        $verified = [];
+        $missing  = [];
+
+        $drive_id = GraphClient::get_drive_id();
+        $root_folder_id = GraphClient::get_root_folder_id();
+
+        if (!$drive_id || !$root_folder_id) {
+            return new WP_REST_Response([
+                'success' => false,
+                'message' => 'SharePoint credentials or root folder not configured.'
+            ], 400);
+        }
+
+        foreach ($backup_ids as $backup_id) {
+            $endpoint = sprintf('drives/%s/items/%s:/%s', $drive_id, $root_folder_id, rawurlencode($backup_id));
+            $data = GraphClient::request($endpoint);
+
+            if ($data && !empty($data['id'])) {
+                $verified[] = $backup_id;
+            } else {
+                $missing[] = $backup_id;
+            }
+        }
+
+        return new WP_REST_Response([
+            'success'          => true,
+            'verified_backups' => $verified,
+            'missing_backups'  => $missing
+        ], 200);
     }
 }
