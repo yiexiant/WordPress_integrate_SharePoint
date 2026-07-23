@@ -333,7 +333,7 @@ class RestController extends WP_REST_Controller
 
         $restore_job_id = \SPSync\Restore\RestoreManager::start_restore($backup_id);
         if (!$restore_job_id) {
-            return new \WP_Error('restore_failed', 'Could not initiate restore job.', [ 'status' => 500 ]);
+            return new \WP_Error('restore_failed', 'Could not initiate restore job. The backup manifest or files may be missing on SharePoint storage.', [ 'status' => 500 ]);
         }
 
         return new WP_REST_Response([
