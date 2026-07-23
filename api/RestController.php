@@ -288,6 +288,9 @@ class RestController extends WP_REST_Controller
         // Compute progress percent
         $progress = ($total_files > 0) ? round(($uploaded_files / $total_files) * 100) : 0;
 
+        $restore_job_id = Settings::get('restore_job_active');
+        $restore_status = Settings::get('restore_status', 'completed');
+
         return new WP_REST_Response([
             'backup_id'      => $latest_backup_id,
             'status'         => $status,
@@ -296,7 +299,11 @@ class RestController extends WP_REST_Controller
             'total_files'    => $total_files,
             'uploaded_files' => $uploaded_files,
             'failed_files'   => $failed_files,
-            'pending_files'  => $pending_files
+            'pending_files'  => $pending_files,
+            'restore'        => [
+                'restore_job_id' => $restore_job_id,
+                'status'         => $restore_status
+            ]
         ], 200);
     }
 

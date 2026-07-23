@@ -262,10 +262,8 @@ class RestoreManager
                 @rmdir($rollback_dir);
             }
 
-            // Clear active restore session options
-            Settings::delete('restore_job_active');
-            Settings::delete('restore_backup_id');
-            Settings::delete('restore_status');
+            // Mark restore status as completed for API queries
+            Settings::set('restore_status', 'completed');
 
             Logger::info("RESTORE SUCCESSFUL: Website has been fully restored to backup point $backup_id.");
         }
@@ -283,8 +281,6 @@ class RestoreManager
 
         RestoreEngine::trigger_rollback($rollback_dir);
 
-        Settings::delete('restore_job_active');
-        Settings::delete('restore_backup_id');
-        Settings::delete('restore_status');
+        Settings::set('restore_status', 'failed');
     }
 }
