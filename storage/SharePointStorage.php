@@ -186,7 +186,7 @@ class SharePointStorage
                 'Content-Type'  => 'application/octet-stream'
             ],
             'body'      => $content,
-            'timeout'   => 30,
+            'timeout'   => 60,
             'sslverify' => true
         ];
 
@@ -243,8 +243,8 @@ class SharePointStorage
         $upload_url = $session_data['uploadUrl'];
         $filesize = filesize($filepath);
 
-        // Chunk size: 10 MB (must be multiple of 327,680 bytes)
-        $chunk_size = 10 * 1024 * 1024; // 10,485,760 bytes
+        // Chunk size: 3.2 MB (10 * 327,680 bytes) - optimal size to prevent timeouts on variable connections
+        $chunk_size = 10 * 327680; // 3,276,800 bytes
 
         $handle = fopen($filepath, 'rb');
         if (!$handle) {
@@ -281,7 +281,7 @@ class SharePointStorage
                         'Content-Type'   => 'application/octet-stream'
                     ],
                     'body'      => $chunk_data,
-                    'timeout'   => 45,
+                    'timeout'   => 120, // Increased timeout to prevent cURL error 28
                     'sslverify' => true
                 ];
 
@@ -293,7 +293,7 @@ class SharePointStorage
                         'file' => $filename,
                         'range'=> "$start-$end"
                     ]);
-                    sleep(2);
+                    sleep($retries * 2); // Exponential backoff pause
                     continue;
                 }
 

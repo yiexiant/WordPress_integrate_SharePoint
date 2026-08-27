@@ -379,19 +379,6 @@ class RestController extends WP_REST_Controller
         global $wpdb;
         $table = $wpdb->prefix . 'spsync_items';
 
-        if ($wpdb->get_var("SHOW TABLES LIKE '$table'") === null) {
-            return new WP_REST_Response([
-                'success'          => true,
-                'verified_backups' => [],
-                'missing_backups'  => []
-            ], 200);
-        }
-
-        $backup_ids = $wpdb->get_col("SELECT DISTINCT backup_id FROM $table WHERE backup_id IS NOT NULL AND backup_id != ''");
-
-        $verified = [];
-        $missing  = [];
-
         $drive_id = GraphClient::get_drive_id();
         $root_folder_id = GraphClient::get_root_folder_id();
 
@@ -402,11 +389,29 @@ class RestController extends WP_REST_Controller
             ], 400);
         }
 
-        foreach ($backup_ids as $backup_id) {
-            $endpoint = sprintf('drives/%s/items/%s:/%s', $drive_id, $root_folder_id, rawurlencode($backup_id));
-            $data = GraphClient::request($endpoint);
+        // Fetch all children items in the SharePoint root folder
+        $children_endpoint = sprintf('drives/%s/items/%s/children', $drive_id, $root_folder_id);
+        $children_data = GraphClient::request($children_endpoint);
 
-            if ($data && !empty($data['id'])) {
+        $remote_backups = [];
+        if ($children_data && !empty($children_data['value']) && is_array($children_data['value'])) {
+            foreach ($children_data['value'] as $item) {
+                if (isset($item['folder']) && !empty($item['name'])) {
+                    $remote_backups[] = $item['name'];
+                }
+            }
+        }
+
+        $backup_ids = [];
+        if ($wpdb->get_var("SHOW TABLES LIKE '$table'") !== null) {
+            $backup_ids = $wpdb->get_col("SELECT DISTINCT backup_id FROM $table WHERE backup_id IS NOT NULL AND backup_id != ''");
+        }
+
+        $verified = [];
+        $missing  = [];
+
+        foreach ($backup_ids as $backup_id) {
+            if (in_array($backup_id, $remote_backups, true)) {
                 $verified[] = $backup_id;
             } else {
                 $missing[] = $backup_id;
@@ -418,7 +423,8 @@ class RestController extends WP_REST_Controller
         return new WP_REST_Response([
             'success'          => true,
             'verified_backups' => $verified,
-            'missing_backups'  => $missing
+            'missing_backups'  => $missing,
+            'remote_backups'   => $remote_backups
         ], 200);
     }
 }

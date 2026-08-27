@@ -133,14 +133,20 @@ class SettingsPage
             Settings::set('root_folder', sanitize_text_field($_POST['root_folder']));
             Settings::set('encrypt_secret', isset($_POST['encrypt_secret']) ? '1' : '0');
 
-            $old_frequency = Settings::get('backup_frequency', 'manual');
-            $new_frequency = sanitize_text_field($_POST['backup_frequency']);
+            $new_frequency = sanitize_text_field($_POST['backup_frequency'] ?? 'manual');
+            $new_time      = sanitize_text_field($_POST['backup_time'] ?? '02:00');
+            $new_dow       = sanitize_text_field($_POST['backup_day_of_week'] ?? '0');
+            $new_dom       = sanitize_text_field($_POST['backup_day_of_month'] ?? '1');
+            $new_date      = sanitize_text_field($_POST['backup_specific_date'] ?? '');
+
             Settings::set('backup_frequency', $new_frequency);
+            Settings::set('backup_time', $new_time);
+            Settings::set('backup_day_of_week', $new_dow);
+            Settings::set('backup_day_of_month', $new_dom);
+            Settings::set('backup_specific_date', $new_date);
             Settings::set('retention_limit', sanitize_text_field($_POST['retention_limit']));
 
-            if ($old_frequency !== $new_frequency) {
-                \SPSync\Scheduler\Scheduler::update_schedule($new_frequency);
-            }
+            \SPSync\Scheduler\Scheduler::update_schedule($new_frequency, $new_time, $new_dow, $new_dom, $new_date);
 
             if (isset($_POST['regenerate_api_key'])) {
                 if (function_exists('random_bytes')) {
@@ -169,8 +175,12 @@ class SettingsPage
         $encrypt_secret   = Settings::get('encrypt_secret', '1');
         $api_key          = Settings::get('api_key');
         
-        $backup_frequency = Settings::get('backup_frequency', 'manual');
-        $retention_limit  = Settings::get('retention_limit', '30');
+        $backup_frequency     = Settings::get('backup_frequency', 'manual');
+        $backup_time          = Settings::get('backup_time', '02:00');
+        $backup_day_of_week   = Settings::get('backup_day_of_week', '0');
+        $backup_day_of_month  = Settings::get('backup_day_of_month', '1');
+        $backup_specific_date = Settings::get('backup_specific_date', '');
+        $retention_limit      = Settings::get('retention_limit', '30');
 
         $masked_secret = empty($client_secret) ? '' : '••••••••••••••••••••••••••••••••';
         $is_configured = !empty($tenant_id) && !empty($client_id) && !empty($site_url);
@@ -501,6 +511,9 @@ class SettingsPage
 
             <!-- TAB 3: AUTOMATION & RETENTION -->
             <?php if ($active_tab === 'automation') : ?>
+                <?php
+                $next_event = wp_next_scheduled(\SPSync\Scheduler\Scheduler::EVENT_HOOK);
+                ?>
                 <form method="post" action="">
                     <?php wp_nonce_field('spsync_save_settings_action'); ?>
                     
@@ -514,20 +527,84 @@ class SettingsPage
                     <input type="hidden" name="encrypt_secret" value="<?php echo esc_attr($encrypt_secret); ?>" />
 
                     <div class="spsync-card" style="margin-bottom: 24px;">
-                        <h3 class="spsync-card-title"><span class="dashicons dashicons-clock"></span> Automated Schedule & Retention Rules</h3>
+                        <h3 class="spsync-card-title"><span class="dashicons dashicons-clock"></span> Automated Schedule & Specific Time Rules</h3>
+                        
+                        <?php if ($next_event) : ?>
+                            <div style="background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; color: #065f46; font-size: 0.85rem; display: flex; align-items: center; gap: 8px;">
+                                <span class="dashicons dashicons-calendar-alt" style="color: #059669;"></span>
+                                <span><strong>Next Scheduled Backup:</strong> <?php echo esc_html(wp_date('Y-m-d H:i:s T', $next_event)); ?> (in <?php echo esc_html(human_time_diff($next_event)); ?>)</span>
+                            </div>
+                        <?php else : ?>
+                            <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; color: #64748b; font-size: 0.85rem;">
+                                No automated backup schedule is currently active. Select a frequency below.
+                            </div>
+                        <?php endif; ?>
+
                         <table class="form-table">
                             <tr>
                                 <th scope="row"><label for="backup_frequency"><?php esc_html_e('Backup Frequency', 'schedule-backup-plugin'); ?></label></th>
                                 <td>
-                                    <select name="backup_frequency" id="backup_frequency" style="padding: 8px 12px; min-width: 240px;">
+                                    <select name="backup_frequency" id="backup_frequency" style="padding: 8px 12px; min-width: 260px;" onchange="toggleScheduleFields(this.value)">
                                         <option value="manual" <?php selected($backup_frequency, 'manual'); ?>><?php esc_html_e('Manual Only (Disabled)', 'schedule-backup-plugin'); ?></option>
-                                        <option value="hourly" <?php selected($backup_frequency, 'hourly'); ?>><?php esc_html_e('Once Hourly', 'schedule-backup-plugin'); ?></option>
-                                        <option value="daily" <?php selected($backup_frequency, 'daily'); ?>><?php esc_html_e('Once Daily', 'schedule-backup-plugin'); ?></option>
-                                        <option value="weekly" <?php selected($backup_frequency, 'weekly'); ?>><?php esc_html_e('Once Weekly', 'schedule-backup-plugin'); ?></option>
-                                        <option value="monthly" <?php selected($backup_frequency, 'monthly'); ?>><?php esc_html_e('Once Monthly', 'schedule-backup-plugin'); ?></option>
+                                        <option value="daily" <?php selected($backup_frequency, 'daily'); ?>><?php esc_html_e('Daily at Specific Time', 'schedule-backup-plugin'); ?></option>
+                                        <option value="weekly" <?php selected($backup_frequency, 'weekly'); ?>><?php esc_html_e('Weekly on Specific Day & Time', 'schedule-backup-plugin'); ?></option>
+                                        <option value="monthly" <?php selected($backup_frequency, 'monthly'); ?>><?php esc_html_e('Monthly on Specific Date & Time', 'schedule-backup-plugin'); ?></option>
+                                        <option value="once" <?php selected($backup_frequency, 'once'); ?>><?php esc_html_e('One-Time on Specific Date & Time', 'schedule-backup-plugin'); ?></option>
                                     </select>
+                                    <p class="description"><?php esc_html_e('Choose how often and when to trigger automated site exports.', 'schedule-backup-plugin'); ?></p>
                                 </td>
                             </tr>
+
+                            <!-- Specific Time Selection (Daily, Weekly, Monthly, Once) -->
+                            <tr id="row_backup_time" style="<?php echo $backup_frequency === 'manual' ? 'display:none;' : ''; ?>">
+                                <th scope="row"><label for="backup_time"><?php esc_html_e('Execution Time', 'schedule-backup-plugin'); ?></label></th>
+                                <td>
+                                    <input type="time" name="backup_time" id="backup_time" value="<?php echo esc_attr($backup_time); ?>" style="padding: 6px 12px; font-size: 0.95rem;" />
+                                    <p class="description"><?php esc_html_e('Site local time to run the backup (24-hour format e.g. 02:00 for 2:00 AM).', 'schedule-backup-plugin'); ?></p>
+                                </td>
+                            </tr>
+
+                            <!-- Day of the Week (Weekly) -->
+                            <tr id="row_day_of_week" style="<?php echo $backup_frequency === 'weekly' ? '' : 'display:none;'; ?>">
+                                <th scope="row"><label for="backup_day_of_week"><?php esc_html_e('Day of the Week', 'schedule-backup-plugin'); ?></label></th>
+                                <td>
+                                    <select name="backup_day_of_week" id="backup_day_of_week" style="padding: 8px 12px; min-width: 200px;">
+                                        <option value="0" <?php selected($backup_day_of_week, '0'); ?>>Sunday</option>
+                                        <option value="1" <?php selected($backup_day_of_week, '1'); ?>>Monday</option>
+                                        <option value="2" <?php selected($backup_day_of_week, '2'); ?>>Tuesday</option>
+                                        <option value="3" <?php selected($backup_day_of_week, '3'); ?>>Wednesday</option>
+                                        <option value="4" <?php selected($backup_day_of_week, '4'); ?>>Thursday</option>
+                                        <option value="5" <?php selected($backup_day_of_week, '5'); ?>>Friday</option>
+                                        <option value="6" <?php selected($backup_day_of_week, '6'); ?>>Saturday</option>
+                                    </select>
+                                    <p class="description"><?php esc_html_e('The day of each week when the backup should run.', 'schedule-backup-plugin'); ?></p>
+                                </td>
+                            </tr>
+
+                            <!-- Day of the Month (Monthly) -->
+                            <tr id="row_day_of_month" style="<?php echo $backup_frequency === 'monthly' ? '' : 'display:none;'; ?>">
+                                <th scope="row"><label for="backup_day_of_month"><?php esc_html_e('Day of the Month', 'schedule-backup-plugin'); ?></label></th>
+                                <td>
+                                    <select name="backup_day_of_month" id="backup_day_of_month" style="padding: 8px 12px; min-width: 200px;">
+                                        <?php for ($d = 1; $d <= 28; $d++) : ?>
+                                            <option value="<?php echo $d; ?>" <?php selected((int)$backup_day_of_month, $d); ?>>
+                                                Day <?php echo $d; ?> of each month
+                                            </option>
+                                        <?php endfor; ?>
+                                    </select>
+                                    <p class="description"><?php esc_html_e('The day number of the month (1-28) to trigger the monthly backup.', 'schedule-backup-plugin'); ?></p>
+                                </td>
+                            </tr>
+
+                            <!-- One-Time Specific Date (Once) -->
+                            <tr id="row_specific_date" style="<?php echo $backup_frequency === 'once' ? '' : 'display:none;'; ?>">
+                                <th scope="row"><label for="backup_specific_date"><?php esc_html_e('Specific Execution Date', 'schedule-backup-plugin'); ?></label></th>
+                                <td>
+                                    <input type="date" name="backup_specific_date" id="backup_specific_date" value="<?php echo esc_attr($backup_specific_date); ?>" min="<?php echo wp_date('Y-m-d'); ?>" style="padding: 6px 12px; font-size: 0.95rem;" />
+                                    <p class="description"><?php esc_html_e('Exact calendar date on which this single one-time backup will execute.', 'schedule-backup-plugin'); ?></p>
+                                </td>
+                            </tr>
+
                             <tr>
                                 <th scope="row"><label for="retention_limit"><?php esc_html_e('SharePoint Retention Policy', 'schedule-backup-plugin'); ?></label></th>
                                 <td>
@@ -539,6 +616,7 @@ class SettingsPage
                                         <option value="100" <?php selected($retention_limit, '100'); ?>><?php esc_html_e('Keep last 100 backups', 'schedule-backup-plugin'); ?></option>
                                         <option value="0" <?php selected($retention_limit, '0'); ?>><?php esc_html_e('Unlimited (Never delete)', 'schedule-backup-plugin'); ?></option>
                                     </select>
+                                    <p class="description"><?php esc_html_e('Automatically removes oldest backups from SharePoint when count exceeds this limit to save cloud space.', 'schedule-backup-plugin'); ?></p>
                                 </td>
                             </tr>
                         </table>
@@ -546,6 +624,20 @@ class SettingsPage
 
                     <button type="submit" name="spsync_save_settings" class="spsync-btn-primary">Save Automation Settings</button>
                 </form>
+
+                <script>
+                    function toggleScheduleFields(freq) {
+                        const rowTime = document.getElementById('row_backup_time');
+                        const rowDow = document.getElementById('row_day_of_week');
+                        const rowDom = document.getElementById('row_day_of_month');
+                        const rowDate = document.getElementById('row_specific_date');
+
+                        if (rowTime) rowTime.style.display = (freq === 'manual') ? 'none' : '';
+                        if (rowDow) rowDow.style.display = (freq === 'weekly') ? '' : 'none';
+                        if (rowDom) rowDom.style.display = (freq === 'monthly') ? '' : 'none';
+                        if (rowDate) rowDate.style.display = (freq === 'once') ? '' : 'none';
+                    }
+                </script>
             <?php endif; ?>
 
             <!-- TAB 4: SYSTEM LOGS -->
