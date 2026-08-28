@@ -38,9 +38,6 @@
             }
         }
     </script>
-    
-    <!-- FontAwesome 6 (Header Logo Only) -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 
     <style>
         body {
@@ -55,39 +52,19 @@
         .white-card:hover {
             border-color: #cbd5e1;
         }
-        .btn-red {
-            background-color: #dc2626;
-            color: #ffffff;
-            font-weight: 600;
-            transition: all 0.15s ease-in-out;
-        }
-        .btn-red:hover {
-            background-color: #b91c1c;
-        }
-        .btn-white {
-            background-color: #ffffff;
-            color: #334155;
-            border: 1px solid #cbd5e1;
-            font-weight: 600;
-            transition: all 0.15s ease-in-out;
-        }
-        .btn-white:hover {
-            background-color: #f1f5f9;
-            color: #0f172a;
-        }
     </style>
     @stack('styles')
 </head>
 <body class="h-full flex flex-col antialiased bg-slate-50 text-slate-800">
-    <!-- Navbar (Clean White & Red) -->
+    <!-- Navbar (Clean White & Red, No Icons) -->
     <header class="sticky top-0 z-40 bg-white border-b border-slate-200 shadow-sm">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div class="flex items-center justify-between h-16">
-                <!-- Logo & Brand (Retained Icon) -->
+                <!-- Logo & Brand (Clean White & Red Text, No Icons) -->
                 <div class="flex items-center gap-3">
                     <a href="{{ route('dashboard') }}" class="flex items-center gap-3 group">
-                        <div class="w-10 h-10 rounded-xl bg-red-600 flex items-center justify-center shadow-md shadow-red-600/20 group-hover:scale-105 transition-transform">
-                            <i class="fa-solid fa-cloud-arrow-up text-white text-base"></i>
+                        <div class="w-9 h-9 rounded-lg bg-red-600 flex items-center justify-center text-white font-extrabold text-sm tracking-wider shadow-sm">
+                            SP
                         </div>
                         <div>
                             <span class="text-base font-bold tracking-tight text-slate-900 flex items-center gap-2">
@@ -98,10 +75,10 @@
                     </a>
                 </div>
 
-                <!-- Navigation Links (Clean text without icons) -->
+                <!-- Navigation Links (Clean Text, No Icons) -->
                 <nav class="hidden md:flex items-center gap-1">
                     <a href="{{ route('dashboard') }}" class="px-4 py-2 rounded-lg text-sm font-semibold transition-colors {{ request()->routeIs('dashboard') ? 'bg-red-50 text-red-700 border border-red-200/60' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100' }}">
-                        KPI Dashboard
+                        Dashboard
                     </a>
                     <a href="{{ route('websites.index') }}" class="px-4 py-2 rounded-lg text-sm font-semibold transition-colors {{ request()->routeIs('websites.*') ? 'bg-red-50 text-red-700 border border-red-200/60' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100' }}">
                         Connected Websites
@@ -121,20 +98,20 @@
     <!-- Main Content Area -->
     <main class="flex-1 py-8">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <!-- Flash Alerts -->
+            <!-- Flash Alerts (Clean White & Red Styling, No Icons) -->
             @if(session('success'))
-                <div class="mb-6 rounded-xl bg-emerald-50 border border-emerald-200 p-4 text-emerald-900 flex items-start justify-between shadow-sm">
+                <div class="mb-6 rounded-xl bg-white border border-slate-300 p-4 text-slate-900 flex items-start justify-between shadow-sm border-l-4 border-l-red-600">
                     <div class="text-sm font-semibold leading-relaxed">{{ session('success') }}</div>
-                    <button type="button" onclick="this.parentElement.remove()" class="text-emerald-700 hover:text-emerald-900 font-bold ml-4">
+                    <button type="button" onclick="this.parentElement.remove()" class="text-slate-400 hover:text-slate-700 font-bold ml-4">
                         &times;
                     </button>
                 </div>
             @endif
 
             @if(session('warning'))
-                <div class="mb-6 rounded-xl bg-amber-50 border border-amber-200 p-4 text-amber-900 flex items-start justify-between shadow-sm">
+                <div class="mb-6 rounded-xl bg-red-50 border border-red-200 p-4 text-red-900 flex items-start justify-between shadow-sm">
                     <div class="text-sm font-semibold leading-relaxed">{{ session('warning') }}</div>
-                    <button type="button" onclick="this.parentElement.remove()" class="text-amber-700 hover:text-amber-900 font-bold ml-4">
+                    <button type="button" onclick="this.parentElement.remove()" class="text-red-700 hover:text-red-900 font-bold ml-4">
                         &times;
                     </button>
                 </div>

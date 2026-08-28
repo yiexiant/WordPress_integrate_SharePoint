@@ -7,7 +7,7 @@
     <!-- Breadcrumb & Header -->
     <div>
         <a href="{{ route('websites.show', $website) }}" class="text-xs font-semibold text-slate-500 hover:text-slate-800 transition block mb-2">
-            &larr; Back to {{ $website->name }} Details
+            Back to {{ $website->name }} Details
         </a>
         <h1 class="text-2xl font-extrabold text-slate-900 tracking-tight">
             Edit Website Settings
@@ -27,6 +27,30 @@
                     Website Name <span class="text-red-600">*</span>
                 </label>
                 <input type="text" name="name" id="name" value="{{ old('name', $website->name) }}" required class="w-full bg-slate-50 border border-slate-300 rounded-lg px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:border-red-600 focus:bg-white">
+            </div>
+
+            <!-- Website Purpose Selection (Backup vs Migration) -->
+            <div class="space-y-3">
+                <label class="block text-xs font-bold uppercase tracking-wider text-slate-700">
+                    Website Purpose <span class="text-red-600">*</span>
+                </label>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                    <label class="relative flex flex-col p-3.5 rounded-xl border-2 cursor-pointer transition select-none bg-slate-50/50 hover:bg-slate-50 border-slate-200 has-checked:border-red-600 has-checked:bg-red-50/20">
+                        <div class="flex items-center justify-between mb-1">
+                            <span class="text-xs font-bold text-slate-900">Routine Backup</span>
+                            <input type="radio" name="purpose" value="backup" class="text-red-600 focus:ring-red-500 w-4 h-4" {{ old('purpose', $website->purpose ?? 'backup') === 'backup' ? 'checked' : '' }}>
+                        </div>
+                        <p class="text-[11px] text-slate-500">Live production website with scheduled SharePoint backups.</p>
+                    </label>
+
+                    <label class="relative flex flex-col p-3.5 rounded-xl border-2 cursor-pointer transition select-none bg-slate-50/50 hover:bg-slate-50 border-slate-200 has-checked:border-red-600 has-checked:bg-red-50/20">
+                        <div class="flex items-center justify-between mb-1">
+                            <span class="text-xs font-bold text-slate-900">Migration Target</span>
+                            <input type="radio" name="purpose" value="migration" class="text-red-600 focus:ring-red-500 w-4 h-4" {{ old('purpose', $website->purpose ?? 'backup') === 'migration' ? 'checked' : '' }}>
+                        </div>
+                        <p class="text-[11px] text-slate-500">Destination site receiving backup data and URL updates.</p>
+                    </label>
+                </div>
             </div>
 
             <!-- WordPress URL -->

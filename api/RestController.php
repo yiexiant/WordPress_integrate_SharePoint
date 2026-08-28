@@ -93,6 +93,14 @@ class RestController extends WP_REST_Controller
                 'permission_callback' => [ $controller, 'check_auth' ]
             ]
         ]);
+
+        register_rest_route(self::NAMESPACE, '/database/search-replace', [
+            [
+                'methods'             => WP_REST_Server::CREATABLE,
+                'callback'            => [ $controller, 'search_and_replace_database' ],
+                'permission_callback' => [ $controller, 'check_auth' ]
+            ]
+        ]);
     }
 
     /**
@@ -398,22 +406,25 @@ class RestController extends WP_REST_Controller
             foreach ($children_data['value'] as $item) {
                 if (isset($item['folder']) && !empty($item['name'])) {
                     $remote_backups[] = $item['name'];
+                } elseif (!empty($item['name']) && (preg_match('/^spsync-backup-/', $item['name']) || preg_match('/\.(zip|sql|json)$/i', $item['name']))) {
+                    $nameWithoutExt = preg_replace('/\.(zip|sql|json|gz)$/i', '', $item['name']);
+                    $remote_backups[] = $nameWithoutExt;
                 }
             }
         }
+        $remote_backups = array_values(array_unique($remote_backups));
 
         $backup_ids = [];
         if ($wpdb->get_var("SHOW TABLES LIKE '$table'") !== null) {
             $backup_ids = $wpdb->get_col("SELECT DISTINCT backup_id FROM $table WHERE backup_id IS NOT NULL AND backup_id != ''");
         }
 
-        $verified = [];
+        // All remote backups discovered on SharePoint are verified
+        $verified = $remote_backups;
         $missing  = [];
 
         foreach ($backup_ids as $backup_id) {
-            if (in_array($backup_id, $remote_backups, true)) {
-                $verified[] = $backup_id;
-            } else {
+            if (!in_array($backup_id, $remote_backups, true)) {
                 $missing[] = $backup_id;
                 // Update database items to status missing
                 $wpdb->update($table, [ 'status' => 'missing' ], [ 'backup_id' => $backup_id ]);
@@ -424,7 +435,27 @@ class RestController extends WP_REST_Controller
             'success'          => true,
             'verified_backups' => $verified,
             'missing_backups'  => $missing,
-            'remote_backups'   => $remote_backups
+            'remote_backups'   => $remote_backups,
+            'total_remote'     => count($remote_backups)
         ], 200);
+    }
+
+    /**
+     * Endpoint callback: POST /spsync/v1/database/search-replace
+     */
+    public function search_and_replace_database($request)
+    {
+        $old_url = $request->get_param('old_url');
+        $new_url = $request->get_param('new_url');
+        $dry_run = filter_var($request->get_param('dry_run'), FILTER_VALIDATE_BOOLEAN);
+
+        if (empty($old_url) || empty($new_url)) {
+            return new \WP_Error('invalid_params', 'Both old_url and new_url are required parameters.', [ 'status' => 400 ]);
+        }
+
+        $result = \SPSync\Database\DatabaseMigrator::search_and_replace($old_url, $new_url, $dry_run);
+
+        $status_code = (!empty($result['success'])) ? 200 : 400;
+        return new WP_REST_Response($result, $status_code);
     }
 }

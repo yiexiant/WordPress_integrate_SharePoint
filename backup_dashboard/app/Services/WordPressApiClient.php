@@ -307,16 +307,24 @@ class WordPressApiClient
                 $data = $response->json();
                 $verified = $data['verified_backups'] ?? [];
                 $missing  = $data['missing_backups'] ?? [];
+                $remote   = $data['remote_backups'] ?? [];
 
-                // Mark verified backups
-                if (!empty($verified)) {
-                    BackupLog::where('website_id', $website->id)
-                        ->whereIn('backup_id', $verified)
-                        ->update([
+                $allRemoteVerified = array_values(array_unique(array_merge($verified, $remote)));
+
+                // Auto-discover and register remote backups into Dashboard BackupLog
+                foreach ($allRemoteVerified as $backupId) {
+                    if (empty($backupId)) continue;
+                    BackupLog::updateOrCreate(
+                        [
+                            'website_id' => $website->id,
+                            'backup_id'  => $backupId,
+                        ],
+                        [
                             'status'                     => 'completed',
                             'is_removed_from_sharepoint' => false,
                             'verified_at'                => now(),
-                        ]);
+                        ]
+                    );
                 }
 
                 // Mark deleted / missing backups on SharePoint
@@ -340,12 +348,12 @@ class WordPressApiClient
 
                 return [
                     'success'          => true,
-                    'verified_count'   => count($verified),
+                    'verified_count'   => count($allRemoteVerified),
                     'missing_count'    => count($missing),
                     'missing_backups'  => $missing,
                     'message'          => sprintf(
                         'Remote verification complete: %d verified on SharePoint, %d missing/removed.',
-                        count($verified),
+                        count($allRemoteVerified),
                         count($missing)
                     ),
                 ];
@@ -389,6 +397,59 @@ class WordPressApiClient
                 'success' => false,
                 'logs'    => [],
                 'message' => $e->getMessage(),
+            ];
+        }
+    }
+
+    /**
+     * Trigger database URL search-and-replace on the WordPress website.
+     *
+     * @param Website $website
+     * @param string  $oldUrl
+     * @param string  $newUrl
+     * @param bool    $dryRun
+     * @return array
+     */
+    public function updateDatabaseUrl(Website $website, string $oldUrl, string $newUrl, bool $dryRun = false): array
+    {
+        try {
+            $url = $this->endpoint($website, 'database/search-replace');
+            $response = $this->request($website, 60)->post($url, [
+                'old_url' => $oldUrl,
+                'new_url' => $newUrl,
+                'dry_run' => $dryRun ? 'true' : 'false',
+            ]);
+
+            $data = $response->json() ?? [];
+
+            if ($response->successful() && !empty($data['success'])) {
+                ActivityLog::create([
+                    'website_id' => $website->id,
+                    'action'     => 'url_update',
+                    'level'      => $dryRun ? 'info' : 'success',
+                    'message'    => $dryRun
+                        ? "Dry Run URL Search & Replace: '{$oldUrl}' -> '{$newUrl}'. Matches found: " . ($data['replacements_count'] ?? 0)
+                        : "Database URL Search & Replace Applied: '{$oldUrl}' -> '{$newUrl}'. Rows updated: " . ($data['rows_updated'] ?? 0),
+                    'context'    => $data,
+                ]);
+
+                return [
+                    'success' => true,
+                    'data'    => $data,
+                    'message' => $data['message'] ?? 'Database URL update completed successfully.',
+                ];
+            }
+
+            $errMsg = $data['message'] ?? ($response->json('message') ?? 'HTTP ' . $response->status());
+            return [
+                'success' => false,
+                'message' => 'URL update failed: ' . $errMsg,
+                'data'    => $data,
+            ];
+        } catch (Exception $e) {
+            return [
+                'success' => false,
+                'message' => 'Exception during database URL update: ' . $e->getMessage(),
             ];
         }
     }

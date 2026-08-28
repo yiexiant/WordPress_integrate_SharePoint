@@ -23,6 +23,7 @@ Route::prefix('websites')->name('websites.')->group(function () {
     Route::post('/{website}/test-all', [WebsiteController::class, 'testAllConnections'])->name('test-all');
     Route::post('/{website}/trigger-backup', [WebsiteController::class, 'triggerBackup'])->name('trigger-backup');
     Route::post('/{website}/trigger-restore', [WebsiteController::class, 'triggerRestore'])->name('trigger-restore');
+    Route::post('/{website}/update-url', [WebsiteController::class, 'updateDatabaseUrl'])->name('update-url');
     Route::get('/{website}/poll-status', [WebsiteController::class, 'pollStatus'])->name('poll-status');
 
     // Bulk Trigger Action

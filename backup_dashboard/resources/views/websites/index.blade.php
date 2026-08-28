@@ -35,7 +35,7 @@
                 </select>
             </div>
 
-            <!-- Right: ⚡ Bulk Trigger Action (Requirement 3) -->
+            <!-- Right: Bulk Trigger Action -->
             <div class="flex items-center gap-3">
                 <span id="selected-counter" class="text-xs font-semibold text-slate-600">0 selected</span>
                 <button type="submit" id="bulk-trigger-btn" disabled class="px-4 py-2 rounded-lg text-xs font-bold text-white bg-red-600 hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-sm transition">
@@ -71,9 +71,16 @@
 
                                 <!-- Name & URL -->
                                 <td class="px-5 py-4">
-                                    <a href="{{ route('websites.show', $site) }}" class="font-bold text-slate-900 hover:text-red-600 text-base transition block">
-                                        {{ $site->name }}
-                                    </a>
+                                    <div class="flex items-center gap-2">
+                                        <a href="{{ route('websites.show', $site) }}" class="font-bold text-slate-900 hover:text-red-600 text-base transition block">
+                                            {{ $site->name }}
+                                        </a>
+                                        @if($site->isMigration())
+                                            <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-red-50 text-red-700 border border-red-200">
+                                                Migration
+                                            </span>
+                                        @endif
+                                    </div>
                                     <a href="{{ $site->url }}" target="_blank" class="text-xs text-slate-500 hover:text-slate-700 font-mono inline-block mt-0.5">
                                         {{ $site->clean_url }}
                                     </a>
@@ -82,7 +89,7 @@
                                 <!-- WP Connection Health -->
                                 <td class="px-4 py-4">
                                     @if($site->status === 'online')
-                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-800 border border-slate-200">
                                             Online
                                         </span>
                                     @else
@@ -95,7 +102,7 @@
                                 <!-- SharePoint Status -->
                                 <td class="px-4 py-4">
                                     @if($site->sharepoint_status === 'connected')
-                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-sky-50 text-sky-700 border border-sky-200">
+                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-800 border border-slate-200">
                                             Connected
                                         </span>
                                     @elseif($site->sharepoint_status === 'error')
@@ -123,11 +130,11 @@
                                             {{ $site->latestBackup->created_at->diffForHumans() }}
                                         </div>
                                         @if($site->latestBackup->is_removed_from_sharepoint)
-                                            <span class="inline-flex items-center text-[11px] font-bold text-amber-700 mt-0.5">
+                                            <span class="inline-flex items-center text-[11px] font-bold text-red-700 mt-0.5">
                                                 Removed from SP
                                             </span>
                                         @else
-                                            <span class="text-[11px] text-emerald-700 font-medium">
+                                            <span class="text-[11px] text-slate-700 font-medium">
                                                 {{ ucfirst($site->latestBackup->status) }}
                                             </span>
                                         @endif
@@ -140,7 +147,7 @@
                                 <td class="px-5 py-4 text-right">
                                     <div class="flex items-center justify-end gap-2">
                                         <a href="{{ route('websites.show', $site) }}" class="px-3 py-1.5 rounded-lg text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 transition">
-                                            View Details &rarr;
+                                            View Details
                                         </a>
                                     </div>
                                 </td>
@@ -151,7 +158,7 @@
                                     <span class="text-base font-semibold text-slate-700 block">No WordPress Websites Found</span>
                                     <p class="text-xs text-slate-500 mt-1">Get started by pairing your first WordPress installation with this dashboard.</p>
                                     <a href="{{ route('websites.create') }}" class="inline-block px-4 py-2 rounded-lg text-xs font-bold text-white bg-red-600 hover:bg-red-700 mt-4 shadow-sm transition">
-                                        Register First Website
+                                        Register New Website
                                     </a>
                                 </td>
                             </tr>
@@ -159,7 +166,6 @@
                     </tbody>
                 </table>
             </div>
-
             @if($websites->hasPages())
                 <div class="p-4 border-t border-slate-200 bg-slate-50">
                     {{ $websites->links() }}
@@ -175,29 +181,27 @@
     document.addEventListener('DOMContentLoaded', () => {
         const selectAll = document.getElementById('select-all-checkbox');
         const checkboxes = document.querySelectorAll('.site-checkbox');
-        const bulkBtn = document.getElementById('bulk-trigger-btn');
         const counter = document.getElementById('selected-counter');
+        const bulkBtn = document.getElementById('bulk-trigger-btn');
 
-        function updateSelection() {
+        function updateCounter() {
             const checkedCount = document.querySelectorAll('.site-checkbox:checked').length;
             counter.textContent = `${checkedCount} selected`;
             bulkBtn.disabled = checkedCount === 0;
-
             if (selectAll) {
                 selectAll.checked = checkedCount > 0 && checkedCount === checkboxes.length;
-                selectAll.indeterminate = checkedCount > 0 && checkedCount < checkboxes.length;
             }
         }
 
         if (selectAll) {
-            selectAll.addEventListener('change', (e) => {
-                checkboxes.forEach(cb => cb.checked = e.target.checked);
-                updateSelection();
+            selectAll.addEventListener('change', () => {
+                checkboxes.forEach(cb => cb.checked = selectAll.checked);
+                updateCounter();
             });
         }
 
         checkboxes.forEach(cb => {
-            cb.addEventListener('change', updateSelection);
+            cb.addEventListener('change', updateCounter);
         });
     });
 </script>

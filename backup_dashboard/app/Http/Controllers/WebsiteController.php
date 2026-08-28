@@ -57,11 +57,13 @@ class WebsiteController extends Controller
     {
         $validated = $request->validate([
             'name'    => 'required|string|max:255',
+            'purpose' => 'nullable|string|in:backup,migration',
             'url'     => 'required|url|max:255',
             'api_key' => 'required|string|max:255',
         ]);
 
         $validated['url'] = rtrim($validated['url'], '/');
+        $validated['purpose'] = $validated['purpose'] ?? 'backup';
         $website = Website::create($validated);
 
         // Auto-run initial health check and system info sync
@@ -72,7 +74,7 @@ class WebsiteController extends Controller
             'website_id' => $website->id,
             'action'     => 'website_created',
             'level'      => 'success',
-            'message'    => "Website '{$website->name}' registered into the dashboard.",
+            'message'    => "Website '{$website->name}' registered into the dashboard as " . ($website->isMigration() ? 'Migration Target' : 'Routine Backup') . ".",
         ]);
 
         return redirect()->route('websites.show', $website)
@@ -95,6 +97,9 @@ class WebsiteController extends Controller
         $successfulBackups = $website->backupLogs()->where('status', 'completed')->where('is_removed_from_sharepoint', false)->count();
         $missingBackups = $website->backupLogs()->where('is_removed_from_sharepoint', true)->orWhere('status', 'missing')->count();
 
+        // Other registered websites for URL update suggestions
+        $otherWebsites = Website::where('id', '!=', $website->id)->orderBy('name', 'asc')->get();
+
         return view('websites.show', compact(
             'website',
             'systemInfo',
@@ -102,7 +107,8 @@ class WebsiteController extends Controller
             'restoreLogs',
             'totalBackups',
             'successfulBackups',
-            'missingBackups'
+            'missingBackups',
+            'otherWebsites'
         ));
     }
 
@@ -121,6 +127,7 @@ class WebsiteController extends Controller
     {
         $validated = $request->validate([
             'name'    => 'required|string|max:255',
+            'purpose' => 'nullable|string|in:backup,migration',
             'url'     => 'required|url|max:255',
             'api_key' => 'required|string|max:255',
         ]);
@@ -327,5 +334,27 @@ class WebsiteController extends Controller
                 'started_at'                 => $latestRestore->started_at ? $latestRestore->started_at->format('H:i:s') : null,
             ] : null,
         ]);
+    }
+
+    /**
+     * Trigger database URL search and replace (migration tool).
+     */
+    public function updateDatabaseUrl(Request $request, Website $website)
+    {
+        $validated = $request->validate([
+            'old_url' => 'required|url|max:255',
+            'new_url' => 'required|url|max:255',
+            'dry_run' => 'nullable|boolean',
+        ]);
+
+        $dryRun = $request->boolean('dry_run');
+        $result = $this->client->updateDatabaseUrl($website, $validated['old_url'], $validated['new_url'], $dryRun);
+
+        if ($result['success']) {
+            $flashType = $dryRun ? 'info' : 'success';
+            return back()->with($flashType, $result['message'])->with('url_update_result', $result['data'] ?? []);
+        }
+
+        return back()->with('error', $result['message']);
     }
 }

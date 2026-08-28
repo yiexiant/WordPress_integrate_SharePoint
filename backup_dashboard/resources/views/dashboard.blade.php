@@ -1,6 +1,6 @@
 @extends('layouts.app')
 
-@section('title', 'KPI Management Dashboard')
+@section('title', 'Dashboard Overview')
 
 @section('content')
 <div class="space-y-8">
@@ -22,7 +22,7 @@
         </div>
     </div>
 
-    <!-- 📊 KPI Metrics Grid (Requirement 1 - White & Red Theme) -->
+    <!-- KPI Metrics Grid (White & Red Theme, No Icons) -->
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
         <!-- KPI 1: Connected Sites -->
         <div class="white-card rounded-xl p-5 border border-slate-200 bg-white">
@@ -35,11 +35,11 @@
                 <span class="text-xs text-slate-500">monitored</span>
             </div>
             <div class="mt-3 flex items-center gap-2 text-xs">
-                <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 font-semibold border border-emerald-200">
+                <span class="inline-flex items-center px-2 py-0.5 rounded bg-slate-100 text-slate-800 font-semibold border border-slate-200">
                     {{ $onlineWebsites }} Online
                 </span>
                 @if($totalWebsites - $onlineWebsites > 0)
-                    <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-red-50 text-red-700 font-semibold border border-red-200">
+                    <span class="inline-flex items-center px-2 py-0.5 rounded bg-red-50 text-red-700 font-semibold border border-red-200">
                         {{ $totalWebsites - $onlineWebsites }} Unreachable
                     </span>
                 @endif
@@ -61,17 +61,17 @@
             </div>
         </div>
 
-        <!-- KPI 3: Backups Removed / Deleted on SharePoint (Requirement 5) -->
-        <div class="white-card rounded-xl p-5 border border-amber-300 bg-amber-50/50">
+        <!-- KPI 3: Backups Removed / Deleted on SharePoint -->
+        <div class="white-card rounded-xl p-5 border border-red-200 bg-red-50/30">
             <div class="flex items-center justify-between">
-                <span class="text-xs font-bold uppercase tracking-wider text-amber-900">Removed from SharePoint</span>
-                <span class="text-xs font-semibold px-2 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200">Alert</span>
+                <span class="text-xs font-bold uppercase tracking-wider text-red-900">Removed from SharePoint</span>
+                <span class="text-xs font-semibold px-2 py-0.5 rounded bg-red-100 text-red-800 border border-red-200">Alert</span>
             </div>
             <div class="mt-3 flex items-baseline gap-2">
-                <span class="text-3xl font-extrabold text-amber-800">{{ $removedFromSharePoint }}</span>
-                <span class="text-xs text-amber-900 font-medium">Remote Missing</span>
+                <span class="text-3xl font-extrabold text-red-700">{{ $removedFromSharePoint }}</span>
+                <span class="text-xs text-red-900 font-medium">Remote Missing</span>
             </div>
-            <div class="mt-3 text-xs text-amber-800 font-medium">
+            <div class="mt-3 text-xs text-red-800 font-medium">
                 Deleted on remote cloud storage
             </div>
         </div>
@@ -107,7 +107,7 @@
                     Website Fleet Health
                 </h2>
                 <a href="{{ route('websites.index') }}" class="text-xs font-semibold text-red-600 hover:text-red-700">
-                    View all sites &rarr;
+                    View all sites
                 </a>
             </div>
 
@@ -128,16 +128,23 @@
                                 <tr class="hover:bg-slate-50/80 transition">
                                     <!-- Name & URL -->
                                     <td class="px-5 py-4">
-                                        <a href="{{ route('websites.show', $site) }}" class="font-bold text-slate-900 hover:text-red-600 transition block">
-                                            {{ $site->name }}
-                                        </a>
+                                        <div class="flex items-center gap-2">
+                                            <a href="{{ route('websites.show', $site) }}" class="font-bold text-slate-900 hover:text-red-600 transition block">
+                                                {{ $site->name }}
+                                            </a>
+                                            @if($site->isMigration())
+                                                <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-red-50 text-red-700 border border-red-200">
+                                                    Migration
+                                                </span>
+                                            @endif
+                                        </div>
                                         <span class="text-xs text-slate-500 font-mono">{{ $site->clean_url }}</span>
                                     </td>
 
                                     <!-- WP Health -->
                                     <td class="px-4 py-4">
                                         @if($site->status === 'online')
-                                            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-800 border border-slate-200">
                                                 Online
                                             </span>
                                         @else
@@ -150,7 +157,7 @@
                                     <!-- SharePoint Status -->
                                     <td class="px-4 py-4">
                                         @if($site->sharepoint_status === 'connected')
-                                            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-sky-50 text-sky-700 border border-sky-200">
+                                            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-800 border border-slate-200">
                                                 Connected
                                             </span>
                                         @elseif($site->sharepoint_status === 'error')
@@ -171,11 +178,11 @@
                                                 {{ $site->latestBackup->created_at->diffForHumans() }}
                                             </div>
                                             @if($site->latestBackup->is_removed_from_sharepoint)
-                                                <span class="inline-flex items-center text-[11px] font-bold text-amber-700 mt-0.5">
+                                                <span class="inline-flex items-center text-[11px] font-bold text-red-700 mt-0.5">
                                                     Removed from SP
                                                 </span>
                                             @else
-                                                <span class="text-[11px] text-emerald-700 font-medium">
+                                                <span class="text-[11px] text-slate-700 font-medium">
                                                     {{ ucfirst($site->latestBackup->status) }}
                                                 </span>
                                             @endif
@@ -200,7 +207,7 @@
                                 <tr>
                                     <td colspan="5" class="px-5 py-8 text-center text-slate-500">
                                         No WordPress websites registered yet. 
-                                        <a href="{{ route('websites.create') }}" class="text-red-600 hover:underline font-semibold block mt-1">Register your first website &rarr;</a>
+                                        <a href="{{ route('websites.create') }}" class="text-red-600 hover:underline font-semibold block mt-1">Register your first website</a>
                                     </td>
                                 </tr>
                             @endforelse
@@ -221,10 +228,8 @@
                     <div class="pb-3 border-b border-slate-100 last:border-0 last:pb-0">
                         <div class="flex items-center justify-between">
                             <span class="text-[11px] font-bold uppercase tracking-wider
-                                @if($act->level === 'success') text-emerald-700
-                                @elseif($act->level === 'warning') text-amber-700
-                                @elseif($act->level === 'danger') text-red-700
-                                @else text-slate-600 @endif">
+                                @if($act->level === 'danger' || $act->level === 'error') text-red-700
+                                @else text-slate-700 @endif">
                                 {{ ucfirst(str_replace('_', ' ', $act->action)) }}
                             </span>
                             <span class="text-[11px] text-slate-400 font-mono">{{ $act->created_at->diffForHumans() }}</span>

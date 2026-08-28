@@ -10,9 +10,20 @@
             <div class="flex flex-wrap items-center gap-3">
                 <h1 class="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">{{ $website->name }}</h1>
                 
+                <!-- Purpose Badge -->
+                @if($website->isMigration())
+                    <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-red-50 text-red-700 border border-red-200">
+                        Migration Target
+                    </span>
+                @else
+                    <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200">
+                        Scheduled Backup
+                    </span>
+                @endif
+
                 <!-- WP Status Badge -->
                 @if($website->status === 'online')
-                    <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                    <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-800 border border-slate-200">
                         WordPress Online
                     </span>
                 @else
@@ -23,7 +34,7 @@
 
                 <!-- SharePoint Status Badge -->
                 @if($website->sharepoint_status === 'connected')
-                    <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-sky-50 text-sky-700 border border-sky-200">
+                    <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-800 border border-slate-200">
                         SharePoint Connected
                     </span>
                 @elseif($website->sharepoint_status === 'error')
@@ -31,7 +42,7 @@
                         SharePoint Auth Error
                     </span>
                 @else
-                    <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-600 border border-slate-200">
+                    <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 border border-slate-200">
                         SharePoint Unchecked
                     </span>
                 @endif
@@ -61,7 +72,7 @@
         </div>
     </div>
 
-    <!-- 🔌 Connection Diagnostics & Action Toolbar (Requirement 2 & 5) -->
+    <!-- Connection Diagnostics & Action Toolbar -->
     <div class="bg-white rounded-xl p-5 border border-slate-200 shadow-sm">
         <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
@@ -71,25 +82,25 @@
                 <p class="text-xs text-slate-500 mt-0.5">Test individual connections or perform deep SharePoint file scans to detect deleted backups.</p>
             </div>
 
-            <!-- Action Buttons Group (Clean White & Red buttons, no icons) -->
+            <!-- Action Buttons Group -->
             <div class="flex flex-wrap items-center gap-2">
                 <!-- Test WordPress Connection -->
                 <form method="POST" action="{{ route('websites.test-wp', $website) }}" class="inline">
                     @csrf
-                    <button type="submit" class="px-3.5 py-2 rounded-lg text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 transition">
+                    <button type="submit" class="px-3.5 py-2 rounded-lg text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 transition shadow-xs">
                         Test WP Connection
                     </button>
                 </form>
 
-                <!-- Verify Remote Backups (Scans for missing/deleted SharePoint files) -->
+                <!-- Verify Remote Backups -->
                 <form method="POST" action="{{ route('websites.verify-backups', $website) }}" class="inline">
                     @csrf
-                    <button type="submit" title="Scan SharePoint root folder to detect deleted backup files" class="px-3.5 py-2 rounded-lg text-xs font-bold text-amber-900 bg-amber-50 hover:bg-amber-100 border border-amber-300 transition">
+                    <button type="submit" class="px-3.5 py-2 rounded-lg text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 transition shadow-xs">
                         Verify SharePoint Files
                     </button>
                 </form>
 
-                <!-- Trigger Single Backup Now (Clean Red with Confirmation) -->
+                <!-- Trigger Single Backup Now -->
                 <button type="button" onclick="openBackupConfirmModal('{{ route('websites.trigger-backup', $website) }}', '{{ addslashes($website->name) }}')" class="px-4 py-2 rounded-lg text-xs font-bold text-white bg-red-600 hover:bg-red-700 shadow-sm transition">
                     Run Backup Now
                 </button>
@@ -97,7 +108,194 @@
         </div>
     </div>
 
-    <!-- 💻 Website System Info Grid (Requirement 2/3) -->
+    <!-- Migration Assistant & Database URL Update Tool (White & Red Design) -->
+    <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+        <div class="p-6 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white">
+            <div class="space-y-1">
+                <h2 class="text-base font-extrabold tracking-tight text-slate-900">
+                    Migration Assistant & Database URL Search and Replace
+                </h2>
+                <p class="text-xs text-slate-500">
+                    Migrate an existing WordPress site backup to this instance and safely update database URLs with serialization integrity.
+                </p>
+            </div>
+
+            <div class="flex items-center gap-2">
+                <button type="button" onclick="toggleMigrationGuide()" class="px-3.5 py-2 rounded-lg text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 transition shadow-xs">
+                    Toggle Migration Tutorial
+                </button>
+            </div>
+        </div>
+
+        <!-- Collapsible Interactive Migration Tutorial (Clean White & Red) -->
+        <div id="migration-workflow-guide" class="{{ $website->isMigration() ? '' : 'hidden' }} p-6 bg-slate-50 border-b border-slate-200 space-y-4">
+            <h3 class="text-xs font-bold uppercase tracking-wider text-slate-700">
+                End-to-End Migration Workflow
+            </h3>
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 text-xs">
+                <!-- Step 1 -->
+                <div class="bg-white rounded-xl p-4 border border-slate-200 shadow-xs space-y-1.5">
+                    <div class="flex items-center justify-between">
+                        <span class="font-bold text-slate-900">1. Pair & Verify</span>
+                        @if($website->status === 'online' && $website->sharepoint_status === 'connected')
+                            <span class="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-800 border border-slate-200">Ready</span>
+                        @else
+                            <span class="text-[10px] font-bold px-2 py-0.5 rounded bg-red-50 text-red-700 border border-red-200">Pending</span>
+                        @endif
+                    </div>
+                    <p class="text-[11px] text-slate-500 leading-relaxed">
+                        Plugin installed, Azure credentials configured, and REST API authenticated.
+                    </p>
+                </div>
+
+                <!-- Step 2 -->
+                <div class="bg-white rounded-xl p-4 border border-slate-200 shadow-xs space-y-1.5">
+                    <div class="flex items-center justify-between">
+                        <span class="font-bold text-slate-900">2. Restore Backup</span>
+                        @if($website->latestRestore && $website->latestRestore->status === 'completed')
+                            <span class="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-800 border border-slate-200">Restored</span>
+                        @else
+                            <span class="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-600">Action</span>
+                        @endif
+                    </div>
+                    <p class="text-[11px] text-slate-500 leading-relaxed">
+                        Choose a backup below and click <strong>Restore Site</strong> to unpack files & import SQL.
+                    </p>
+                </div>
+
+                <!-- Step 3 -->
+                <div class="bg-white rounded-xl p-4 border-2 border-red-600 shadow-xs space-y-1.5 bg-red-50/20">
+                    <div class="flex items-center justify-between">
+                        <span class="font-bold text-red-900">3. Update Database URLs</span>
+                        <span class="text-[10px] font-bold px-2 py-0.5 rounded bg-red-100 text-red-800 border border-red-200">Current</span>
+                    </div>
+                    <p class="text-[11px] text-slate-600 leading-relaxed">
+                        Use the tool below to replace old domain URLs with <code class="text-red-700 font-mono">{{ $website->url }}</code>.
+                    </p>
+                </div>
+
+                <!-- Step 4 -->
+                <div class="bg-white rounded-xl p-4 border border-slate-200 shadow-xs space-y-1.5">
+                    <div class="flex items-center justify-between">
+                        <span class="font-bold text-slate-900">4. Verify & Flush</span>
+                        <span class="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-600">Final</span>
+                    </div>
+                    <p class="text-[11px] text-slate-500 leading-relaxed">
+                        Caches and rewrite rules are flushed automatically. Log in to WordPress Admin to verify.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Database URL Update Form Section -->
+        <div class="p-6 sm:p-8 space-y-6">
+            @if(session('url_update_result'))
+                @php $res = session('url_update_result'); @endphp
+                <div class="rounded-xl border border-slate-300 p-5 space-y-3 bg-white shadow-sm border-l-4 border-l-red-600">
+                    <div class="flex items-center justify-between">
+                        <h4 class="text-xs font-bold uppercase tracking-wider text-slate-900">
+                            {{ !empty($res['dry_run']) ? 'Dry Run (Preview) Summary' : 'Database URL Update Execution Report' }}
+                        </h4>
+                        <span class="text-[11px] font-mono font-semibold text-slate-500">
+                            Execution: {{ $res['duration_seconds'] ?? 0 }}s
+                        </span>
+                    </div>
+
+                    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+                        <div class="bg-slate-50 rounded-lg p-3 border border-slate-200">
+                            <span class="text-[10px] uppercase font-bold text-slate-500 block">Replacements</span>
+                            <span class="text-lg font-extrabold font-mono mt-0.5 block text-red-600">{{ $res['replacements_count'] ?? 0 }}</span>
+                        </div>
+                        <div class="bg-slate-50 rounded-lg p-3 border border-slate-200">
+                            <span class="text-[10px] uppercase font-bold text-slate-500 block">Rows Updated</span>
+                            <span class="text-lg font-extrabold font-mono mt-0.5 block text-slate-900">{{ $res['rows_updated'] ?? 0 }}</span>
+                        </div>
+                        <div class="bg-slate-50 rounded-lg p-3 border border-slate-200">
+                            <span class="text-[10px] uppercase font-bold text-slate-500 block">Tables Scanned</span>
+                            <span class="text-lg font-extrabold font-mono mt-0.5 block text-slate-900">{{ $res['tables_scanned'] ?? 0 }}</span>
+                        </div>
+                        <div class="bg-slate-50 rounded-lg p-3 border border-slate-200">
+                            <span class="text-[10px] uppercase font-bold text-slate-500 block">Tables Affected</span>
+                            <span class="text-lg font-extrabold font-mono mt-0.5 block text-slate-900">{{ $res['tables_updated'] ?? 0 }}</span>
+                        </div>
+                    </div>
+
+                    @if(!empty($res['tables']) && count($res['tables']) > 0)
+                        <div class="mt-3">
+                            <span class="text-[11px] font-bold block mb-1.5 text-slate-700">Affected Tables Breakdown:</span>
+                            <div class="flex flex-wrap gap-2">
+                                @foreach($res['tables'] as $t)
+                                    <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-slate-50 text-xs font-mono border border-slate-200 text-slate-800">
+                                        <strong>{{ $t['table'] }}</strong>
+                                        <span class="text-slate-500">({{ $t['rows_updated'] }} rows, {{ $t['replacements'] }} matches)</span>
+                                    </span>
+                                @endforeach
+                            </div>
+                        </div>
+                    @endif
+                </div>
+            @endif
+
+            <form id="url-update-form" method="POST" action="{{ route('websites.update-url', $website) }}" class="space-y-5">
+                @csrf
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    <!-- Old URL -->
+                    <div class="space-y-1.5">
+                        <div class="flex items-center justify-between">
+                            <label for="old_url" class="block text-xs font-bold uppercase tracking-wider text-slate-700">
+                                Old Website URL (Source) <span class="text-red-600">*</span>
+                            </label>
+                            @if(isset($otherWebsites) && $otherWebsites->count() > 0)
+                                <span class="text-[11px] text-slate-400">Quick fill from dashboard:</span>
+                            @endif
+                        </div>
+                        <input type="url" name="old_url" id="old_url" value="{{ old('old_url') }}" required placeholder="https://old-domain.com" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 font-mono focus:outline-none focus:border-red-600 focus:bg-white">
+                        
+                        @if(isset($otherWebsites) && $otherWebsites->count() > 0)
+                            <div class="flex flex-wrap items-center gap-1.5 pt-1">
+                                <span class="text-[11px] text-slate-400">Suggestions:</span>
+                                @foreach($otherWebsites as $other)
+                                    <button type="button" onclick="setOldUrl('{{ $other->url }}')" class="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200 transition">
+                                        {{ $other->name }} ({{ parse_url($other->url, PHP_URL_HOST) ?? $other->url }})
+                                    </button>
+                                @endforeach
+                            </div>
+                        @endif
+                    </div>
+
+                    <!-- New URL -->
+                    <div class="space-y-1.5">
+                        <label for="new_url" class="block text-xs font-bold uppercase tracking-wider text-slate-700">
+                            New Website URL (Target) <span class="text-red-600">*</span>
+                        </label>
+                        <input type="url" name="new_url" id="new_url" value="{{ old('new_url', $website->url) }}" required class="w-full bg-slate-50 border border-slate-300 rounded-lg px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 font-mono focus:outline-none focus:border-red-600 focus:bg-white">
+                        <p class="text-[11px] text-slate-500">Defaults to this WordPress site's configured URL.</p>
+                    </div>
+                </div>
+
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-3 border-t border-slate-100">
+                    <!-- Dry Run Toggle -->
+                    <label class="flex items-center gap-2 cursor-pointer select-none text-xs text-slate-700">
+                        <input type="checkbox" name="dry_run" id="dry_run" value="1" checked class="rounded text-red-600 focus:ring-red-500 w-4 h-4">
+                        <span><strong>Dry Run Preview:</strong> Test and count matching database rows without applying changes</span>
+                    </label>
+
+                    <!-- Action Buttons -->
+                    <div class="flex items-center gap-2.5">
+                        <button type="button" onclick="triggerUrlUpdate(true)" class="px-4 py-2 rounded-lg text-xs font-semibold text-slate-800 bg-white hover:bg-slate-50 border border-slate-300 transition shadow-xs">
+                            Run Dry Run (Preview)
+                        </button>
+                        <button type="button" onclick="triggerUrlUpdate(false)" class="px-4 py-2 rounded-lg text-xs font-bold text-white bg-red-600 hover:bg-red-700 shadow-sm transition">
+                            Apply Live URL Update
+                        </button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Website System Info Grid -->
     <div class="space-y-4">
         <h2 class="text-lg font-bold text-slate-900">
             Website System Diagnostics & Environment
@@ -159,7 +357,7 @@
             </div>
         </div>
 
-        <!-- Disk Space Usage Bar (if available) -->
+        <!-- Disk Space Usage Bar -->
         @if(isset($systemInfo['disk']['free_format']))
             <div class="bg-white rounded-xl p-4 border border-slate-200 shadow-sm flex items-center justify-between text-xs text-slate-700">
                 <span class="font-medium">
@@ -170,7 +368,7 @@
         @endif
     </div>
 
-    <!-- 📦 Backup History & SharePoint Sync State (Requirement 5) -->
+    <!-- Backup History & SharePoint Sync State -->
     <div class="space-y-4">
         <div class="flex items-center justify-between">
             <h2 class="text-lg font-bold text-slate-900">
@@ -208,23 +406,22 @@
                                     @endif
                                 </td>
 
-                                <!-- SharePoint Cloud Status & "Removed from SharePoint" (Requirement 5) -->
+                                <!-- SharePoint Cloud Status -->
                                 <td class="px-4 py-4">
                                     @if($backup->is_removed_from_sharepoint || $backup->status === 'missing')
-                                        <!-- ⚠️ REMOVED FROM SHAREPOINT BADGE -->
-                                        <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-amber-50 text-amber-900 border border-amber-300" title="This backup file is no longer present on SharePoint storage.">
+                                        <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-red-50 text-red-700 border border-red-200" title="This backup file is no longer present on SharePoint storage.">
                                             Removed from SharePoint
                                         </span>
                                     @elseif($backup->status === 'completed')
-                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-800 border border-slate-200">
                                             Synced to SharePoint
                                         </span>
                                     @elseif($backup->status === 'uploading' || $backup->status === 'queued')
-                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-sky-50 text-sky-700 border border-sky-200">
+                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-800 border border-slate-200">
                                             Uploading ({{ $backup->uploaded_files }}/{{ $backup->total_files }})
                                         </span>
                                     @elseif($backup->status === 'failed')
-                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-red-50 text-red-700 border border-red-200">
+                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-red-50 text-red-700 border border-red-200">
                                             Upload Failed
                                         </span>
                                     @else
@@ -237,7 +434,7 @@
                                 <!-- Created Timestamp -->
                                 <td class="px-4 py-4 text-xs text-slate-600 font-mono">
                                     {{ $backup->created_at->format('Y-m-d H:i:s') }}
-                                    <span class="text-[11px] text-slate-400 block">({{ $backup->created_at->diffForHumans() }})</span>
+                                    <span class="text-[11px] text-slate-400 block">({{ $backup->created_at->diffForHumans() }}</span>
                                 </td>
 
                                 <!-- Action (Restore) -->
@@ -269,13 +466,13 @@
         </div>
     </div>
 
-    <!-- ⏱️ Restoration History & Restoration Duration (Requirement 4) -->
+    <!-- Restoration History & Restoration Duration -->
     <div class="space-y-4">
         <div class="flex items-center justify-between">
             <h2 class="text-lg font-bold text-slate-900">
                 Restoration History & Performance Metrics
             </h2>
-            <span class="text-xs font-semibold text-slate-500">Tracks restoration duration & rollback status</span>
+            <span class="text-xs font-semibold text-slate-500">Tracks restoration duration and rollback status</span>
         </div>
 
         <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
@@ -306,11 +503,11 @@
                                 <!-- Status -->
                                 <td class="px-4 py-4">
                                     @if($restore->status === 'completed')
-                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-800 border border-slate-200">
                                             Restored Successfully
                                         </span>
                                     @elseif($restore->status === 'failed')
-                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-red-50 text-red-700 border border-red-200" title="{{ $restore->error_message }}">
+                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-red-50 text-red-700 border border-red-200" title="{{ $restore->error_message }}">
                                             Rollback Triggered
                                         </span>
                                     @else
@@ -320,7 +517,7 @@
                                     @endif
                                 </td>
 
-                                <!-- ⏱️ Restoration Duration Metric (Requirement 4) -->
+                                <!-- Restoration Duration Metric -->
                                 <td class="px-4 py-4">
                                     <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold font-mono bg-red-50 text-red-800 border border-red-200">
                                         {{ $restore->formatted_duration }}
@@ -406,10 +603,86 @@
         </form>
     </div>
 </div>
+
+<!-- Modal: Confirm Database URL Update (Live Mode) -->
+<div id="url-confirm-modal" class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs hidden items-center justify-center p-4">
+    <div class="bg-white rounded-2xl max-w-md w-full p-6 border border-slate-200 shadow-2xl space-y-5">
+        <div>
+            <h3 class="text-base font-bold text-red-700">Confirm Live Database URL Update</h3>
+            <span class="text-xs text-slate-500">Serialized-safe Search & Replace</span>
+        </div>
+
+        <div class="space-y-2 text-xs text-slate-700 leading-relaxed">
+            <p>
+                You are about to execute a live database replacement on <strong class="text-slate-900">{{ $website->name }}</strong>:
+            </p>
+            <div class="bg-slate-50 rounded-lg p-3 border border-slate-200 font-mono text-[11px] space-y-1">
+                <div>Old URL: <span id="confirm-old-url" class="text-red-600 font-bold"></span></div>
+                <div>New URL: <span id="confirm-new-url" class="text-slate-900 font-bold"></span></div>
+            </div>
+            <p class="text-[11px] text-slate-500">
+                All occurrences in posts, options (including <code class="text-slate-800 font-mono">siteurl</code> and <code class="text-slate-800 font-mono">home</code>), postmeta, and taxonomies will be updated.
+            </p>
+        </div>
+
+        <div class="flex items-center justify-end gap-3 pt-2">
+            <button type="button" onclick="closeUrlConfirmModal()" class="px-4 py-2 rounded-lg text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 transition">
+                Cancel
+            </button>
+            <button type="button" onclick="submitLiveUrlUpdate()" class="px-4 py-2 rounded-lg text-xs font-bold text-white bg-red-600 hover:bg-red-700 shadow-sm transition">
+                Yes, Update Database
+            </button>
+        </div>
+    </div>
+</div>
 @endsection
 
 @push('scripts')
 <script>
+    function toggleMigrationGuide() {
+        const guide = document.getElementById('migration-workflow-guide');
+        guide.classList.toggle('hidden');
+    }
+
+    function setOldUrl(url) {
+        document.getElementById('old_url').value = url;
+    }
+
+    function triggerUrlUpdate(isDryRun) {
+        const form = document.getElementById('url-update-form');
+        const oldUrl = document.getElementById('old_url').value.trim();
+        const newUrl = document.getElementById('new_url').value.trim();
+        const dryRunCheckbox = document.getElementById('dry_run');
+
+        if (!oldUrl || !newUrl) {
+            alert('Please enter both Old Website URL and New Website URL.');
+            return;
+        }
+
+        if (isDryRun) {
+            dryRunCheckbox.checked = true;
+            form.submit();
+        } else {
+            dryRunCheckbox.checked = false;
+            document.getElementById('confirm-old-url').textContent = oldUrl;
+            document.getElementById('confirm-new-url').textContent = newUrl;
+            const modal = document.getElementById('url-confirm-modal');
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+        }
+    }
+
+    function closeUrlConfirmModal() {
+        const modal = document.getElementById('url-confirm-modal');
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+    }
+
+    function submitLiveUrlUpdate() {
+        document.getElementById('dry_run').checked = false;
+        document.getElementById('url-update-form').submit();
+    }
+
     function openBackupConfirmModal(actionUrl, siteName) {
         document.getElementById('backup-confirm-form').action = actionUrl;
         document.getElementById('backup-modal-site-name').textContent = siteName;

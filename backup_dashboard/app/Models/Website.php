@@ -11,6 +11,7 @@ class Website extends Model
 
     protected $fillable = [
         'name',
+        'purpose',
         'url',
         'api_key',
         'status',
@@ -54,5 +55,15 @@ class Website extends Model
     public function getCleanUrlAttribute()
     {
         return rtrim($this->url, '/');
+    }
+
+    public function isMigration(): bool
+    {
+        return ($this->purpose ?? 'backup') === 'migration';
+    }
+
+    public function isBackup(): bool
+    {
+        return ($this->purpose ?? 'backup') === 'backup';
     }
 }
