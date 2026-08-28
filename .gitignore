@@ -1,0 +1,42 @@
+# Environments & Secrets (CRITICAL: Never commit .env files or credentials)
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.secret
+
+# Dependencies
+/vendor/
+/node_modules/
+npm-debug.log
+yarn-error.log
+
+# Databases & Local Data
+*.sqlite
+*.sqlite-journal
+*.db
+
+# Laravel Framework Storage
+storage/framework/cache/*
+storage/framework/sessions/*
+storage/framework/views/*
+storage/framework/testing/*
+storage/logs/*.log
+!storage/framework/cache/.gitignore
+!storage/framework/sessions/.gitignore
+!storage/framework/views/.gitignore
+!storage/framework/testing/.gitignore
+!storage/logs/.gitignore
+
+# Build & System Files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.sublime-workspace
+*.sublime-project
+
+# Legacy temporary directories
+/backup_dashboard/
+/backup_plugin_V2/

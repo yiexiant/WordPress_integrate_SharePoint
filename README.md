@@ -1,6 +1,38 @@
 # SharePoint Automated Backup & Multi-Site Central Dashboard for WordPress
 
-An enterprise-grade disaster recovery and fleet management suite for WordPress. It combines a standalone **Central Laravel Dashboard** with a high-performance **WordPress Plugin** to automate database dumps, split ZIP file archiving, chunked Microsoft SharePoint cloud synchronization, and one-click restorations with safety rollbacks.
+An enterprise-grade disaster recovery, migration, and fleet management suite for WordPress. It combines a standalone **Central Laravel Dashboard** with a high-performance **WordPress Plugin** to automate database dumps, split ZIP archiving, chunked Microsoft SharePoint cloud synchronization, and 1-click restorations with serialized-safe database URL migrations.
+
+---
+
+## 📁 Repository Structure
+
+```text
+├── dashboard/                  # Central Fleet Management Application (Laravel 11 / TailwindCSS)
+│   ├── app/                    # Controllers, Models, WordPress API Client
+│   ├── config/                 # Application & database configurations
+│   ├── database/               # Migrations & seeders
+│   ├── resources/views/        # Clean White & Red Blade UI views
+│   ├── routes/                 # Web routes
+│   └── .env.example            # Environment configuration template
+│
+├── plugin/                     # WordPress Plugin Source Code & Packages
+│   ├── admin/                  # WP Admin Settings & Configuration Tabs
+│   ├── api/                    # REST API Endpoints (Health, Verify, Restore, URL Migration)
+│   ├── auth/                   # Microsoft Graph OAuth 2.0 Client Credentials
+│   ├── backup/                 # MySQL Dump & Zip Compression Engines
+│   ├── database/               # Schema Installer & Database URL Migrator
+│   ├── helpers/                # Settings & Encryption Helpers
+│   ├── logger/                 # Database Log Engine
+│   ├── queue/                  # Background Upload & ActionScheduler Queue
+│   ├── restore/                # Download, Checksum, Batch SQL & File Restore Engine
+│   ├── scheduler/              # Automated Cron Scheduler
+│   ├── storage/                # Microsoft SharePoint Chunked Storage Engine
+│   ├── schedule-backup-plugin.php # Main Plugin Entry Point
+│   └── schedule_backup_plugin.zip # Pre-built installable plugin package
+│
+├── .gitignore                  # Global gitignore (excludes all .env & secrets)
+└── README.md                   # Full documentation & deployment guides
+```
 
 ---
 
@@ -10,8 +42,8 @@ An enterprise-grade disaster recovery and fleet management suite for WordPress. 
 2. [Key Features](#-key-features)
 3. [Microsoft Azure & SharePoint Setup Guide](#-microsoft-azure--sharepoint-setup-guide)
 4. [WordPress Plugin User Guide](#-wordpress-plugin-user-guide)
-5. [Windows Setup & Deployment Guide](#-windows-setup--deployment-guide)
-6. [Linux Server (Ubuntu/Debian) Deployment Guide](#-linux-server-ubuntudebian-deployment-guide)
+5. [Windows Setup & Deployment Guide (Dashboard)](#-windows-setup--deployment-guide-dashboard)
+6. [Linux Server Deployment Guide (Dashboard)](#-linux-server-deployment-guide-dashboard)
 7. [Central Dashboard Configuration & Site Pairing](#-central-dashboard-configuration--site-pairing)
 8. [Automation & Retention Explained](#-automation--retention-explained)
 9. [Troubleshooting & FAQ](#-troubleshooting--faq)
@@ -28,8 +60,9 @@ An enterprise-grade disaster recovery and fleet management suite for WordPress. 
 │  - Multi-site KPI statistics (SharePoint Synced vs Missing) │
 │  - Fleet-wide status monitoring & live AJAX polling         │
 │  - Single & Bulk backup triggers with confirmation modals   │
-│  - Deep SharePoint file scan ("Removed from SharePoint")    │
-│  - Restoration performance & duration logging               │
+│  - Remote SharePoint file scan ("Removed from SharePoint")  │
+│  - 1-Click Restoration & Duration tracking                  │
+│  - Serialized-Safe Database URL Migration Assistant         │
 └──────────────────────────────┬──────────────────────────────┘
                                │
                  REST API (HTTPS + X-SPSYNC-KEY)
@@ -45,10 +78,11 @@ An enterprise-grade disaster recovery and fleet management suite for WordPress. 
 │  - Flexible scheduler (Daily, Weekly, Monthly, Specific Date)│
 │  - Auto-retention pruning on Microsoft SharePoint           │
 │  - Pre-restore safety rollback snapshot                     │
+│  - Recursive Serialized-Safe Database URL Search & Replace  │
 └──────────────────────────────┬──────────────────────────────┘
                                │
-                    Microsoft Graph API v1.0
-                    (OAuth 2.0 Client Credentials)
+                     Microsoft Graph API v1.0
+                     (OAuth 2.0 Client Credentials)
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────┐
@@ -63,6 +97,7 @@ An enterprise-grade disaster recovery and fleet management suite for WordPress. 
 
 - **Centralized Multi-Site Fleet Management**: Manage unlimited WordPress websites from one unified white-and-red dashboard.
 - **Deep Cloud Verification**: Detects if backups were manually deleted from SharePoint and tags them as `"Removed from SharePoint"`.
+- **Automated Website Migration Assistant**: Recursively updates URLs across all database tables (including `siteurl`, `home`, and post content) while preserving PHP serialized string lengths.
 - **Restoration Duration Metrics**: Tracks exact execution time for every restore operation.
 - **Specific Time & Calendar Scheduling**: Schedule backups daily at a specific hour, weekly on a chosen day, monthly on a specific date, or as a one-time scheduled backup.
 - **Smart Cloud Retention Policy**: Automatically prunes older backups on SharePoint once your chosen limit (e.g. 10, 30, 50) is reached.
@@ -103,7 +138,7 @@ To allow the plugin to upload backups to your SharePoint Document Library, regis
 ## 🔌 WordPress Plugin User Guide
 
 ### 1. Installation
-1. Download `schedule_backup_plugin.zip` from [`C:\backup_plugin\backup_plugin_V2\`](file:///C:/backup_plugin/backup_plugin_V2/schedule_backup_plugin.zip).
+1. Locate [`plugin/schedule_backup_plugin.zip`](file:///c:/backup_plugin/plugin/schedule_backup_plugin.zip).
 2. In WordPress Admin, navigate to **Plugins** &rarr; **Add New Plugin** &rarr; **Upload Plugin**.
 3. Select `schedule_backup_plugin.zip` and click **Install Now** &rarr; **Activate Plugin**.
 4. A new menu item **SharePoint Backup** will appear in the main WordPress sidebar.
@@ -133,30 +168,25 @@ Fill in your credentials from Azure:
 
 ---
 
-## 🪟 Windows Setup & Deployment Guide
+## 🪟 Windows Setup & Deployment Guide (Dashboard)
 
 You can run the Central Dashboard on Windows using **Laragon**, **XAMPP**, or standalone **PHP 8.3 CLI**.
 
 ### Option A: Laragon (Recommended for Windows)
-1. Download and install [Laragon](https://laragon.org/).
-2. Place the `backup_dashboard` folder inside `C:\laragon\www\backup_dashboard`.
-3. In Laragon terminal (or PowerShell):
+1. Place the `dashboard` folder inside `C:\laragon\www\dashboard`.
+2. In Laragon terminal (or PowerShell):
    ```powershell
-   cd C:\laragon\www\backup_dashboard
+   cd C:\laragon\www\dashboard
    composer install
    cp .env.example .env
    php artisan key:generate
    php artisan migrate --seed
    ```
-4. Laragon will automatically map the dashboard to `http://backup_dashboard.test`.
-5. Start the background queue worker or scheduler if needed:
-   ```powershell
-   php artisan serve --port=8000
-   ```
+3. Laragon will automatically map the dashboard to `http://dashboard.test` (or run `php artisan serve`).
 
 ---
 
-## 🐧 Linux Server (Ubuntu/Debian) Deployment Guide
+## 🐧 Linux Server Deployment Guide (Dashboard)
 
 Deploying the **Central Laravel Dashboard** on a production Linux server (Ubuntu 22.04 / 24.04 LTS):
 
@@ -172,23 +202,11 @@ curl -sS https://getcomposer.org/installer | php
 sudo mv composer.phar /usr/local/bin/composer
 ```
 
-### 2. Configure PHP Settings (`/etc/php/8.3/fpm/php.ini`)
-```ini
-memory_limit = 512M
-max_execution_time = 300
-upload_max_filesize = 128M
-post_max_size = 128M
-```
-Restart PHP-FPM:
+### 2. Deploy Dashboard Codebase
 ```bash
-sudo systemctl restart php8.3-fpm
-```
-
-### 3. Deploy Dashboard Codebase
-```bash
-sudo mkdir -p /var/www/backup_dashboard
-sudo cp -r /path/to/backup_dashboard/* /var/www/backup_dashboard/
-cd /var/www/backup_dashboard
+sudo mkdir -p /var/www/dashboard
+sudo cp -r /path/to/dashboard/* /var/www/dashboard/
+cd /var/www/dashboard
 
 # Install Composer packages
 composer install --no-dev --optimize-autoloader
@@ -198,20 +216,20 @@ cp .env.example .env
 php artisan key:generate
 
 # Set permissions
-sudo chown -R www-data:www-data /var/www/backup_dashboard
-sudo chmod -R 775 /var/www/backup_dashboard/storage /var/www/backup_dashboard/bootstrap/cache
+sudo chown -R www-data:www-data /var/www/dashboard
+sudo chmod -R 775 /var/www/dashboard/storage /var/www/dashboard/bootstrap/cache
 
 # Run database migrations
 php artisan migrate --force
 ```
 
-### 4. Configure Nginx Virtual Host
-Create `/etc/nginx/sites-available/backup_dashboard`:
+### 3. Configure Nginx Virtual Host
+Create `/etc/nginx/sites-available/dashboard`:
 ```nginx
 server {
     listen 80;
     server_name dashboard.yourdomain.com;
-    root /var/www/backup_dashboard/public;
+    root /var/www/dashboard/public;
 
     add_header X-Frame-Options "SAMEORIGIN";
     add_header X-Content-Type-Options "nosniff";
@@ -241,19 +259,9 @@ server {
 ```
 Enable site:
 ```bash
-sudo ln -s /etc/nginx/sites-available/backup_dashboard /etc/nginx/sites-enabled/
+sudo ln -s /etc/nginx/sites-available/dashboard /etc/nginx/sites-enabled/
 sudo nginx -t
 sudo systemctl reload nginx
-```
-
-### 5. Automated Background Cron
-Add the Laravel schedule worker to `crontab`:
-```bash
-sudo crontab -u www-data -e
-```
-Add:
-```cron
-* * * * * cd /var/www/backup_dashboard && php artisan schedule:run >> /dev/null 2>&1
 ```
 
 ---
@@ -265,48 +273,13 @@ Add:
 2. Locate and copy the **Central Dashboard Secret API Key** (`X-SPSYNC-KEY`).
 3. Open your Central Dashboard (`http://127.0.0.1:8000` or `https://dashboard.yourdomain.com`).
 4. Click **Register New Website**.
-5. Provide:
-   - **Website Name**: Label for your website (e.g. *Main Online Store*).
-   - **WordPress Site URL**: e.g., `https://example.com`
-   - **Secret API Key**: Paste the copied API key.
-6. Click **Save & Test Connection**.
-
-### Dashboard Features Available:
-- **Test WP Connection**: Validates REST API accessibility and fetches live server memory, PHP version, and database size.
-- **Verify SharePoint Files**: Performs a remote SharePoint storage audit. If any backup folder was manually deleted from cloud storage, it tags the archive as **`Removed from SharePoint`**.
-- **Run Backup Now**: Triggers an immediate backup with an interactive confirmation modal.
-- **Bulk Trigger Backup**: Select multiple sites on the fleet list and trigger batch backups with one click.
-- **Restore Site & Duration**: Select any valid cloud backup archive to restore files and tables, recording the exact restoration duration in seconds.
-
----
-
-## 🛡️ Automation & Retention Explained
-
-### What is Retention?
-Retention is an automatic cloud housekeeping policy. When you set a retention limit of **30**:
-- Backups #1 through #30 are safely stored in SharePoint.
-- When Backup #31 completes, the plugin automatically removes Backup #1 from SharePoint.
-- This prevents your Microsoft SharePoint storage quota from filling up while maintaining a rolling window of recent backups.
-
----
-
-## ❓ Troubleshooting & FAQ
-
-### 1. `cURL error 28: Operation timed out`
-- **Cause**: Outbound upload speed had transient latency when transferring large chunks to Microsoft Graph.
-- **Fix**: The plugin has been optimized with **3.2 MB chunk slices**, 120-second timeout limits, and exponential backoff retry logic.
-
-### 2. `OAuth Authentication Error (HTTP 401/403)`
-- **Cause**: Azure Client Secret expired or Tenant/Client IDs were entered with typos.
-- **Fix**: Generate a new client secret in Azure Entra ID &rarr; App Registrations &rarr; Certificates & Secrets, and paste it into WordPress Admin &rarr; SharePoint Backup &rarr; SharePoint & OAuth Config.
-
-### 3. `Another backup process is currently running`
-- **Cause**: A previous backup was interrupted or timed out, leaving an active lock.
-- **Fix**: In WordPress Admin, go to **SharePoint Backup** &rarr; **Overview & Testing**, and click **Clear / Reset Stale Lock**.
+5. Select Purpose: **Routine Backup** or **Migration Target**.
+6. Provide Website Name, WordPress Site URL, and Secret API Key.
+7. Click **Save & Test Connection**.
 
 ---
 
 ## 📄 License & Credits
 
-Developed with enterprise resilience standards for WordPress disaster recovery and cloud synchronization.
+Developed with enterprise resilience standards for WordPress disaster recovery and Microsoft SharePoint cloud synchronization.
 Licensed under the MIT License.
