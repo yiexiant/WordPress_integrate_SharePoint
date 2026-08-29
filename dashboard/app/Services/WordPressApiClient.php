@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Website;
 use App\Models\BackupLog;
+use App\Models\RestoreLog;
 use App\Models\ActivityLog;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -173,6 +174,26 @@ class WordPressApiClient
 
                     if ($backupLog->status === 'completed') {
                         $website->update(['last_backup_at' => now()]);
+                    }
+                }
+
+                // Update RestoreLog if restore job information is returned
+                if (!empty($data['restore']['restore_job_id'])) {
+                    $restoreLog = RestoreLog::where('website_id', $website->id)
+                        ->where('restore_job_id', $data['restore']['restore_job_id'])
+                        ->first();
+
+                    if ($restoreLog && !in_array($restoreLog->status, ['completed', 'failed'], true)) {
+                        $newStatus = $data['restore']['status'] ?? $restoreLog->status;
+                        $restoreLog->status = $newStatus;
+
+                        if (in_array($newStatus, ['completed', 'failed'], true)) {
+                            $restoreLog->completed_at = now();
+                            if ($restoreLog->started_at) {
+                                $restoreLog->duration_seconds = $restoreLog->started_at->diffInSeconds($restoreLog->completed_at);
+                            }
+                        }
+                        $restoreLog->save();
                     }
                 }
 
