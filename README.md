@@ -268,12 +268,15 @@ cd /var/www
 # 2. Clone the repository
 sudo git clone https://github.com/yiexiant/WordPress_integrate_SharePoint.git wp-sharepoint-suite
 
-# 3. Switch into the central dashboard directory
+# 3. Assign ownership to your current user (prevents git dubious ownership & composer permission errors)
+sudo chown -R $USER:$USER /var/www/wp-sharepoint-suite
+
+# 4. Switch into the central dashboard directory
 cd /var/www/wp-sharepoint-suite/dashboard
 ```
 
 > [!IMPORTANT]
-> The repository contains two folders: `dashboard/` (the Laravel application) and `plugin/` (the WordPress plugin). All server commands below must be executed from within `/var/www/wp-sharepoint-suite/dashboard`.
+> The repository contains two folders: `dashboard/` (the Laravel application) and `plugin/` (the WordPress plugin). Running `sudo chown -R $USER:$USER /var/www/wp-sharepoint-suite` ensures your logged-in user can run `composer`, `npm`, and `git` commands without permission errors. Web server permissions (`www-data`) are applied in Step 7.
 
 ---
 
@@ -644,6 +647,13 @@ To prevent infinite storage consumption in your Microsoft SharePoint Document Li
 ### 5. Dashboard Shows `cURL error 28: Operation timed out`
 - **Cause**: The server hosting the Central Dashboard cannot reach the WordPress server on port 443, or a security firewall (e.g., Cloudflare WAF, Wordfence) is blocking incoming requests with custom headers.
 - **Fix**: Whitelist your Central Dashboard server IP in Cloudflare or your WordPress security plugin.
+
+### 6. `fatal: detected dubious ownership` / `vendor does not exist and could not be created`
+- **Cause**: The repository was cloned using `sudo git clone`, making `root` the owner of all files. Running `composer` or `npm` as your standard non-root user fails because Git flags the directory as untrusted and Composer does not have write permissions to create `vendor/`.
+- **Fix**: Assign ownership of the repository to your current user:
+  ```bash
+  sudo chown -R $USER:$USER /var/www/wp-sharepoint-suite
+  ```
 
 ---
 
