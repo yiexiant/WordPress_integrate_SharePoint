@@ -188,55 +188,268 @@ You can run the Central Dashboard on Windows using **Laragon**, **XAMPP**, or st
 
 ## 🐧 Linux Server Deployment Guide (Dashboard)
 
-Deploying the **Central Laravel Dashboard** on a production Linux server (Ubuntu 22.04 / 24.04 LTS):
+This guide takes you step-by-step from a fresh, clean Linux server (Ubuntu 22.04 / 24.04 LTS or Debian 12) through **`git clone`**, dependency installation, database configuration, asset compilation, and web server setup until the **Central Dashboard is fully live in production with HTTPS**.
 
-### 1. Install System Dependencies
+---
+
+### 📋 Prerequisites & Server Requirements
+
+| Component | Minimum Requirement | Recommended |
+| :--- | :--- | :--- |
+| **OS** | Ubuntu 22.04 LTS / 24.04 LTS or Debian 12 | Ubuntu 24.04 LTS |
+| **CPU / RAM** | 1 vCPU, 1 GB RAM (with swap) | 2 vCPU, 2 GB+ RAM |
+| **PHP** | PHP 8.3 (CLI & FPM) with standard extensions | PHP 8.3 FPM |
+| **Node.js** | Node.js 18+ & NPM (for compiling Vite assets) | Node.js 20+ LTS |
+| **Web Server** | Nginx 1.18+ or Apache 2.4+ | Nginx 1.24+ |
+| **Database** | SQLite 3 (simplest) OR MySQL 8.0 / MariaDB 10.11 | SQLite (Fleet < 50 sites) / MySQL (50+ sites) |
+| **Firewall** | Inbound TCP ports: `22` (SSH), `80` (HTTP), `443` (HTTPS) | UFW or Cloud Security Group |
+
+---
+
+### Step 1: Update Server & Install System Dependencies
+
+Update packages and install essential utilities, Git, Nginx, and PHP 8.3.
+
+> [!NOTE]
+> Ubuntu 22.04 repositories default to PHP 8.1. Adding the `ondrej/php` PPA ensures access to PHP 8.3 and all required extensions.
+
 ```bash
+# 1. Update package lists and upgrade system
 sudo apt update && sudo apt upgrade -y
-sudo apt install -y nginx mysql-server curl git unzip \
-php8.3-fpm php8.3-cli php8.3-mysql php8.3-curl php8.3-gd \
-php8.3-mbstring php8.3-xml php8.3-zip php8.3-intl php8.3-bcmath php8.3-sqlite3
 
-# Install Composer
-curl -sS https://getcomposer.org/installer | php
-sudo mv composer.phar /usr/local/bin/composer
+# 2. Install core utilities & Git
+sudo apt install -y software-properties-common curl git unzip ufw ca-certificates gnupg
+
+# 3. Add Ondřej Surý PHP PPA
+sudo add-apt-repository -y ppa:ondrej/php
+sudo apt update
+
+# 4. Install Nginx and PHP 8.3 with required extensions
+sudo apt install -y nginx \
+  php8.3-fpm php8.3-cli php8.3-common \
+  php8.3-mysql php8.3-sqlite3 php8.3-curl \
+  php8.3-mbstring php8.3-xml php8.3-zip \
+  php8.3-intl php8.3-bcmath php8.3-gd
+
+# 5. Verify PHP version
+php -v
+# Output should show: PHP 8.3.x
 ```
 
-### 2. Deploy Dashboard Codebase
-```bash
-sudo mkdir -p /var/www/dashboard
-sudo cp -r /path/to/dashboard/* /var/www/dashboard/
-cd /var/www/dashboard
+---
 
-# Install Composer packages
+### Step 2: Install Composer & Node.js (LTS)
+
+The dashboard requires **Composer** for backend dependencies and **Node.js/NPM** to compile Tailwind CSS and Vite assets.
+
+```bash
+# --- Install Composer globally ---
+curl -sS https://getcomposer.org/installer -o /tmp/composer-setup.php
+sudo php /tmp/composer-setup.php --install-dir=/usr/local/bin --filename=composer
+composer --version
+
+# --- Install Node.js 20 LTS (NodeSource repository) ---
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+node -v
+npm -v
+```
+
+---
+
+### Step 3: Clone the Repository via Git
+
+Clone the project repository into the standard Linux web root directory (`/var/www`).
+
+```bash
+# 1. Navigate to /var/www
+cd /var/www
+
+# 2. Clone the repository
+sudo git clone https://github.com/yiexiant/WordPress_integrate_SharePoint.git wp-sharepoint-suite
+
+# 3. Switch into the central dashboard directory
+cd /var/www/wp-sharepoint-suite/dashboard
+```
+
+> [!IMPORTANT]
+> The repository contains two folders: `dashboard/` (the Laravel application) and `plugin/` (the WordPress plugin). All server commands below must be executed from within `/var/www/wp-sharepoint-suite/dashboard`.
+
+---
+
+### Step 4: Install PHP & Node Dependencies
+
+Install production backend packages and compile front-end assets with Vite.
+
+```bash
+# 1. Install Composer dependencies (optimized for production)
 composer install --no-dev --optimize-autoloader
 
-# Environment setup
+# 2. Install NPM packages and build production assets
+npm install
+npm run build
+```
+
+> [!TIP]
+> Running `npm run build` is critical. It compiles Tailwind CSS and outputs the `public/build/manifest.json` bundle. Without this step, visiting the dashboard will return a `ViteManifestNotFoundException` 500 error.
+
+---
+
+### Step 5: Environment Configuration (`.env`)
+
+Copy the environment template and generate a unique application encryption key:
+
+```bash
+# 1. Copy environment template
 cp .env.example .env
+
+# 2. Generate unique application key
 php artisan key:generate
 
-# Set permissions
-sudo chown -R www-data:www-data /var/www/dashboard
-sudo chmod -R 775 /var/www/dashboard/storage /var/www/dashboard/bootstrap/cache
+# 3. Edit .env with your production domain and settings
+nano .env
+```
 
-# Run database migrations
+Set the following variables in `/var/www/wp-sharepoint-suite/dashboard/.env`:
+
+```ini
+APP_NAME="SharePoint Backup Dashboard"
+APP_ENV=production
+APP_DEBUG=false
+APP_URL=https://dashboard.yourdomain.com
+
+LOG_CHANNEL=stack
+LOG_LEVEL=error
+
+# Choose your database connection below (Step 6)
+DB_CONNECTION=sqlite
+```
+
+---
+
+### Step 6: Database Setup & Migrations
+
+Choose either **Option A (SQLite)** or **Option B (MySQL)**:
+
+#### Option A: SQLite (Recommended — Fastest & Zero Maintenance)
+
+For most fleets (< 100 WordPress sites), SQLite is lightweight, self-contained, and requires zero external database server management.
+
+```bash
+# 1. Create SQLite database file
+touch database/database.sqlite
+
+# 2. Verify in .env that DB_CONNECTION is set to sqlite:
+# DB_CONNECTION=sqlite
+# (Ensure DB_HOST, DB_PORT, DB_DATABASE, DB_USERNAME, DB_PASSWORD remain commented out)
+
+# 3. Run database migrations
 php artisan migrate --force
 ```
 
-### 3. Configure Nginx Virtual Host
-Create `/etc/nginx/sites-available/dashboard`:
+#### Option B: MySQL / MariaDB (Enterprise Fleets)
+
+If you prefer a dedicated MySQL database:
+
+```bash
+# 1. Install MySQL Server (if not already installed)
+sudo apt install -y mysql-server
+
+# 2. Create database and user in MySQL
+sudo mysql -e "CREATE DATABASE wp_dashboard CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+sudo mysql -e "CREATE USER 'wp_dash_user'@'localhost' IDENTIFIED BY 'StrongSecretPassword123!';"
+sudo mysql -e "GRANT ALL PRIVILEGES ON wp_dashboard.* TO 'wp_dash_user'@'localhost';"
+sudo mysql -e "FLUSH PRIVILEGES;"
+
+# 3. Update .env variables:
+# DB_CONNECTION=mysql
+# DB_HOST=127.0.0.1
+# DB_PORT=3306
+# DB_DATABASE=wp_dashboard
+# DB_USERNAME=wp_dash_user
+# DB_PASSWORD=StrongSecretPassword123!
+
+# 4. Run database migrations
+php artisan migrate --force
+```
+
+---
+
+### Step 7: Permissions & Security Hardening
+
+Nginx and PHP-FPM run as the `www-data` user on Ubuntu/Debian. The web server must own the dashboard files and have write permissions for storage, cache, and the database.
+
+```bash
+# 1. Set directory ownership to www-data
+sudo chown -R www-data:www-data /var/www/wp-sharepoint-suite/dashboard
+
+# 2. Set standard file and folder permissions
+sudo find /var/www/wp-sharepoint-suite/dashboard -type f -exec chmod 644 {} \;
+sudo find /var/www/wp-sharepoint-suite/dashboard -type d -exec chmod 755 {} \;
+
+# 3. Grant write permissions to writable storage and bootstrap cache
+sudo chmod -R 775 /var/www/wp-sharepoint-suite/dashboard/storage
+sudo chmod -R 775 /var/www/wp-sharepoint-suite/dashboard/bootstrap/cache
+
+# 4. (If using SQLite) Grant write permissions to the database folder and file
+sudo chmod -R 775 /var/www/wp-sharepoint-suite/dashboard/database
+sudo chmod 664 /var/www/wp-sharepoint-suite/dashboard/database/database.sqlite
+
+# 5. Restrict access to sensitive .env file
+sudo chmod 640 /var/www/wp-sharepoint-suite/dashboard/.env
+```
+
+---
+
+### Step 8: Optimize Laravel for Production
+
+Cache application configuration, routes, and views into compiled files to maximize performance:
+
+```bash
+cd /var/www/wp-sharepoint-suite/dashboard
+
+php artisan config:cache
+php artisan route:cache
+php artisan view:cache
+php artisan event:cache
+```
+
+> [!TIP]
+> Whenever you modify your `.env` file or pull new code, run `php artisan optimize:clear` followed by `php artisan optimize` to refresh the compiled cache.
+
+---
+
+### Step 9: Configure Nginx Virtual Host
+
+Create a dedicated Nginx configuration for the dashboard.
+
+```bash
+sudo nano /etc/nginx/sites-available/dashboard.conf
+```
+
+Paste the following production configuration (replace `dashboard.yourdomain.com` with your actual domain or server IP):
+
 ```nginx
 server {
     listen 80;
+    listen [::]:80;
     server_name dashboard.yourdomain.com;
-    root /var/www/dashboard/public;
+
+    # Document root MUST point to Laravel's public directory
+    root /var/www/wp-sharepoint-suite/dashboard/public;
 
     add_header X-Frame-Options "SAMEORIGIN";
     add_header X-Content-Type-Options "nosniff";
+    add_header X-XSS-Protection "1; mode=block";
+    add_header Referrer-Policy "strict-origin-when-cross-origin";
 
-    index index.php;
+    index index.php index.html;
     charset utf-8;
 
+    # Allow larger payloads if needed
+    client_max_body_size 64M;
+
+    # Main routing
     location / {
         try_files $uri $uri/ /index.php?$query_string;
     }
@@ -246,22 +459,115 @@ server {
 
     error_page 404 /index.php;
 
+    # Pass PHP scripts to FastCGI server
     location ~ \.php$ {
         fastcgi_pass unix:/var/run/php/php8.3-fpm.sock;
         fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
         include fastcgi_params;
+
+        # Increased timeouts for long-running remote backup triggers and verification
+        fastcgi_connect_timeout 300s;
+        fastcgi_send_timeout 300s;
+        fastcgi_read_timeout 300s;
+        fastcgi_buffer_size 128k;
+        fastcgi_buffers 4 256k;
+        fastcgi_busy_buffers_size 256k;
     }
 
+    # Deny access to hidden files (.env, .git, etc.)
     location ~ /\.(?!well-known).* {
         deny all;
     }
 }
 ```
-Enable site:
+
+Enable the configuration, test for syntax errors, and reload Nginx:
+
 ```bash
-sudo ln -s /etc/nginx/sites-available/dashboard /etc/nginx/sites-enabled/
+# 1. Link site to sites-enabled
+sudo ln -s /etc/nginx/sites-available/dashboard.conf /etc/nginx/sites-enabled/
+
+# 2. Test Nginx syntax
 sudo nginx -t
+
+# 3. Reload Nginx
 sudo systemctl reload nginx
+```
+
+---
+
+### Step 10: Enable HTTPS with Free Let's Encrypt SSL
+
+Secure your dashboard with an automated SSL certificate using Certbot:
+
+```bash
+# 1. Install Certbot and the Nginx plugin
+sudo apt install -y certbot python3-certbot-nginx
+
+# 2. Obtain and automatically configure SSL certificate
+sudo certbot --nginx -d dashboard.yourdomain.com
+
+# 3. Test automatic certificate renewal
+sudo certbot renew --dry-run
+```
+
+Certbot will automatically modify your Nginx virtual host to redirect all HTTP traffic to HTTPS.
+
+---
+
+### Step 11: Setup Automated Laravel Scheduler (Cron)
+
+The dashboard scheduler handles automatic polling, backup verification, and database cleanups:
+
+```bash
+# Add Laravel scheduler to www-data crontab
+(sudo crontab -u www-data -l 2>/dev/null; echo "* * * * * php /var/www/wp-sharepoint-suite/dashboard/artisan schedule:run >> /dev/null 2>&1") | sudo crontab -u www-data -
+
+# Verify crontab entry
+sudo crontab -u www-data -l
+```
+
+---
+
+### Step 12: Production Smoke Test & Verification
+
+1. Open your browser and navigate to `https://dashboard.yourdomain.com`.
+2. You should be greeted by the clean **Red & White Central Management Dashboard**.
+3. Verify that cards for **Total Managed Sites**, **SharePoint Synced**, and **Missing / Desynced** load cleanly without errors.
+4. Click **Register New Website** to pair your first WordPress site using its `X-SPSYNC-KEY`.
+
+---
+
+### 🔄 Updating the Production Dashboard (Future Git Pulls)
+
+Whenever you push updates or new features to GitHub, update your production server with this single workflow:
+
+```bash
+cd /var/www/wp-sharepoint-suite/dashboard
+
+# 1. Put Laravel into maintenance mode (optional, for zero downtime)
+php artisan down || true
+
+# 2. Pull the latest commits
+git pull origin main
+
+# 3. Update Composer & NPM packages
+composer install --no-dev --optimize-autoloader
+npm install
+npm run build
+
+# 4. Run any new database migrations
+php artisan migrate --force
+
+# 5. Clear and refresh production caches
+php artisan optimize:clear
+php artisan optimize
+
+# 6. Restart PHP-FPM to release OPcache
+sudo systemctl restart php8.3-fpm
+
+# 7. Bring application back online
+php artisan up
 ```
 
 ---
@@ -269,13 +575,75 @@ sudo systemctl reload nginx
 ## 🖥️ Central Dashboard Configuration & Site Pairing
 
 ### Pairing a WordPress Site with Central Dashboard
-1. Open your WordPress Admin &rarr; **SharePoint Backup** &rarr; **Overview & Testing**.
+
+1. Open your target WordPress Admin &rarr; **SharePoint Backup** &rarr; **Overview & Testing**.
 2. Locate and copy the **Central Dashboard Secret API Key** (`X-SPSYNC-KEY`).
-3. Open your Central Dashboard (`http://127.0.0.1:8000` or `https://dashboard.yourdomain.com`).
-4. Click **Register New Website**.
-5. Select Purpose: **Routine Backup** or **Migration Target**.
-6. Provide Website Name, WordPress Site URL, and Secret API Key.
-7. Click **Save & Test Connection**.
+3. Open your Central Dashboard (`https://dashboard.yourdomain.com`).
+4. Click **Register New Website** (or **+ Add Site**).
+5. Select Purpose:
+   - **Routine Backup**: Monitored production website scheduled for periodic disaster recovery backups.
+   - **Migration Target**: Staging, development, or new server target for cloning and URL search-and-replace.
+6. Provide:
+   - **Website Name**: e.g., `Corporate Main Site`
+   - **WordPress Site URL**: e.g., `https://example.com` (must include `https://`)
+   - **Secret API Key**: Paste the `X-SPSYNC-KEY` from Step 2.
+7. Click **Save & Test Connection**. The dashboard will perform an immediate handshake with the WordPress REST API endpoint (`/wp-json/spsync/v1/health`).
+
+---
+
+## ⚙️ Automation & Retention Explained
+
+### Backup Schedule Options
+
+Backups are executed natively via the WordPress ActionScheduler engine or WordPress pseudo-cron without requiring external server triggers:
+
+- **Daily at Specific Time**: Runs every 24 hours at the chosen hour and minute (e.g., `02:00` for 2:00 AM server time).
+- **Weekly on Specific Day & Time**: Runs once every 7 days on the selected day of the week (e.g., Sunday at `03:00`).
+- **Monthly on Specific Date & Time**: Runs on a designated day of the month (e.g., the 1st of each month at `01:00`).
+- **One-Time on Specific Date & Time**: Sets an isolated one-off execution timestamp and automatically transitions to `Manual Only` once completed.
+
+### Cloud Retention Pruning Mechanism
+
+To prevent infinite storage consumption in your Microsoft SharePoint Document Library:
+
+1. After every successful backup upload, the plugin queries Microsoft Graph API for all items located in your configured SharePoint folder (`Remote Root Folder`).
+2. It filters items matching the naming pattern `backup-*.zip`.
+3. It sorts the files by creation date (newest first).
+4. If total files exceed your configured threshold (e.g., **30 backups**), the oldest excess files are deleted via `DELETE /drives/{drive-id}/items/{item-id}`.
+5. All pruned files are logged in the plugin's Execution Logs table.
+
+---
+
+## 🛠️ Troubleshooting & FAQ
+
+### 1. `ViteManifestNotFoundException` (500 Internal Server Error)
+- **Cause**: Frontend assets have not been built on the server.
+- **Fix**: Run `npm install && npm run build` inside `/var/www/wp-sharepoint-suite/dashboard`.
+
+### 2. SQLite: `General error: 14 unable to open database file`
+- **Cause**: PHP-FPM (`www-data`) lacks write permissions to the database file or the enclosing `database/` directory (SQLite requires directory write permissions to manage journal and lock files).
+- **Fix**:
+  ```bash
+  sudo chown -R www-data:www-data /var/www/wp-sharepoint-suite/dashboard/database
+  sudo chmod -R 775 /var/www/wp-sharepoint-suite/dashboard/database
+  sudo chmod 664 /var/www/wp-sharepoint-suite/dashboard/database/database.sqlite
+  ```
+
+### 3. Nginx: `504 Gateway Time-out` during Remote Backup or Verification
+- **Cause**: The backup operation or SharePoint scan exceeded Nginx's default 60-second FastCGI timeout.
+- **Fix**: Ensure your Nginx configuration contains increased timeouts inside the `location ~ \.php$` block:
+  ```nginx
+  fastcgi_read_timeout 300s;
+  ```
+  Then reload Nginx with `sudo systemctl reload nginx`.
+
+### 4. Dashboard Shows `WordPress Connection: Failed (401 Unauthorized)`
+- **Cause**: The `X-SPSYNC-KEY` entered in the Central Dashboard does not match the secret key shown in WordPress Admin.
+- **Fix**: Open WordPress Admin &rarr; **SharePoint Backup** &rarr; **Overview & Testing**, copy the key, and update it in Dashboard &rarr; **Edit Website**.
+
+### 5. Dashboard Shows `cURL error 28: Operation timed out`
+- **Cause**: The server hosting the Central Dashboard cannot reach the WordPress server on port 443, or a security firewall (e.g., Cloudflare WAF, Wordfence) is blocking incoming requests with custom headers.
+- **Fix**: Whitelist your Central Dashboard server IP in Cloudflare or your WordPress security plugin.
 
 ---
 
