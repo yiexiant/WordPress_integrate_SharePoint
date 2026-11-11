@@ -22,6 +22,15 @@ namespace SPSync\Queue {
         public static function trigger() { self::$triggered = true; }
     }
 }
+namespace SPSync\Auth {
+    class GraphClient
+    {
+        public static $responses = [];
+        public static function get_drive_id() { return 'test-drive'; }
+        public static function get_root_folder_id() { return 'test-root'; }
+        public static function request($endpoint, $method = 'GET', $body = null) { return array_shift(self::$responses); }
+    }
+}
 namespace {
     use SPSync\Backup\BackupSelection;
     use SPSync\Backup\BackupEngine;
@@ -70,6 +79,7 @@ namespace {
         public $queries = [];
         public $items = [];
         public $fail = '';
+        public $has_tables = false;
         public function query($sql) {
             $this->queries[] = $sql;
             return $this->fail && strpos($sql, $this->fail) !== false ? false : 1;
@@ -77,7 +87,7 @@ namespace {
         public function insert($table, $row, $formats = []) { $this->items[] = $row; return 1; }
         public function get_col($sql) { return ['wp_posts', 'wp_spsync_settings']; }
         public function get_row($sql, $mode = null) { return ['wp_posts', 'CREATE TABLE `wp_posts` (`id` int)']; }
-        public function get_var($sql) { return strpos($sql, 'SHOW TABLES') === 0 ? null : 0; }
+        public function get_var($sql) { return strpos($sql, 'SHOW TABLES') === 0 ? ($this->has_tables ? 'wp_fixture' : null) : 0; }
     }
     $wpdb = new TestDatabase();
 
@@ -421,6 +431,42 @@ namespace {
         $nonce_allowed = false;
         try { \SPSync\Admin\SettingsPage::handle_download_backup(); verify(false, 'Invalid download nonce was allowed.'); }
         catch (\RuntimeException $error) { verify($error->getMessage() === 'invalid nonce', 'Device download requires a valid nonce.'); }
+
+        Settings::set('restore_status', 'completed');
+        Settings::set('backup_frequency', 'once');
+        $controller = new \SPSync\Api\RestController();
+        $accepted = $controller->start_backup(null);
+        verify($accepted instanceof WP_REST_Response && !empty($accepted->data['backup_id']), 'Remote backup accepts an identifiable queued job.');
+        $remote_id = $accepted->data['backup_id'];
+        verify(end($scheduled)[1] === [$remote_id], 'Remote job ID is passed to the scheduled worker.');
+        verify(is_wp_error($controller->start_backup(null)), 'Do not accept duplicate queued API backup commands.');
+        verify($controller->get_backup_status(null)->data['backup_id'] === $remote_id, 'Polling reports the accepted ID before archive creation starts.');
+        verify(BackupEngine::run() === false, 'A separate backup cannot overtake an accepted API job.');
+        $result = \SPSync\Scheduler\Scheduler::run_scheduled_backup($remote_id);
+        verify($result === $remote_id, 'Worker creates artifacts using the original API job ID.');
+        $remote_manifest = wp_upload_dir()['basedir'] . '/spsync-backups/' . $remote_id . '/manifest.json';
+        verify(json_decode(file_get_contents($remote_manifest), true)['backup_id'] === $remote_id, 'Manifest and API identifiers remain identical.');
+        verify(!get_option('spsync_api_backup_request'), 'Worker releases its pending API request reservation.');
+        verify(Settings::get('backup_frequency') === 'once', 'A manually requested API backup does not cancel an independent one-time schedule.');
+        Settings::delete('backup_running');
+        $schedule_fail = true;
+        verify(is_wp_error($controller->start_backup(null)) && !get_option('spsync_api_backup_request'), 'Remote scheduling failure is returned and its reservation is removed.');
+        $schedule_fail = false;
+        $accepted = $controller->start_backup(null);
+        Settings::set('restore_status', 'extracting');
+        \SPSync\Scheduler\Scheduler::run_scheduled_backup($accepted->data['backup_id']);
+        $wpdb->has_tables = true;
+        $failed = $controller->get_backup_status(null)->data;
+        verify($failed['backup_id'] === $accepted->data['backup_id'] && $failed['status'] === 'failed', 'A worker failure before queue insertion is monitorable with the accepted ID.');
+        $wpdb->has_tables = false;
+        Settings::set('restore_status', 'completed');
+        \SPSync\Auth\GraphClient::$responses = [false];
+        verify(is_wp_error($controller->verify_remote_backups(null)), 'A failed SharePoint listing must not be interpreted as missing backups.');
+        \SPSync\Auth\GraphClient::$responses = [['value' => [['name' => 'spsync-backup-first', 'folder' => []]], '@odata.nextLink' => 'https://graph.microsoft.com/v1.0/next-page'], ['value' => [['name' => 'spsync-backup-second', 'folder' => []]]]];
+        $verified = $controller->verify_remote_backups(null)->data;
+        verify(count($verified['remote_backups']) === 2, 'Remote verification follows Graph listing pages.');
+        \SPSync\Auth\GraphClient::$responses = [['value' => [], '@odata.nextLink' => 'https://untrusted.example/next-page']];
+        verify(is_wp_error($controller->verify_remote_backups(null)), 'Do not follow Graph pagination to another host.');
         echo "PASS: $checks regression checks\n";
     } finally {
         foreach ($device_directories as $path) { PrivateStorage::remove($path, 'download'); }

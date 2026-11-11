@@ -19,7 +19,7 @@ class Scheduler
     public static function init()
     {
         add_filter('cron_schedules', [ __CLASS__, 'register_cron_intervals' ]);
-        add_action(self::EVENT_HOOK, [ __CLASS__, 'run_scheduled_backup' ]);
+        add_action(self::EVENT_HOOK, [ __CLASS__, 'run_scheduled_backup' ], 10, 1);
     }
 
     /**
@@ -45,11 +45,24 @@ class Scheduler
     /**
      * Handler for cron execution. Runs backup process under lock.
      */
-    public static function run_scheduled_backup()
+    public static function run_scheduled_backup($requested_backup_id = null)
     {
         Logger::info('Scheduled backup execution triggered by WP Cron.');
         
-        $result = BackupEngine::run();
+        try {
+            $result = BackupEngine::run(false, 'sharepoint', null, $requested_backup_id);
+        } catch (\Throwable $error) {
+            $result = false;
+            Logger::error('Backup worker stopped: ' . $error->getMessage());
+        } finally {
+            if ($requested_backup_id && empty($result)) {
+                update_option('spsync_api_backup_failed', ['backup_id' => $requested_backup_id, 'created_at' => time()], false);
+            }
+            $pending = get_option('spsync_api_backup_request');
+            if (is_array($pending) && $pending['backup_id'] === $requested_backup_id) {
+                delete_option('spsync_api_backup_request');
+            }
+        }
         
         if ($result) {
             Logger::info("Scheduled backup run completed. Backup ID: $result");
@@ -59,10 +72,11 @@ class Scheduler
 
         // If one-time backup was scheduled, set frequency back to manual
         $frequency = Settings::get('backup_frequency', 'manual');
-        if ($frequency === 'once') {
+        if ($frequency === 'once' && $requested_backup_id === null) {
             Settings::set('backup_frequency', 'manual');
             Logger::info('One-time scheduled backup completed. Schedule reset to manual.');
         }
+        return $result;
     }
 
     /**

@@ -15,9 +15,16 @@ class BackupEngine
      *
      * @return string|false Backup ID on success, or false on failure.
      */
-    public static function run($force_override = false, $destination = 'sharepoint', $private_directory = null)
+    public static function run($force_override = false, $destination = 'sharepoint', $private_directory = null, $requested_backup_id = null)
     {
         global $wp_version, $wpdb;
+        if ($requested_backup_id !== null && (!is_string($requested_backup_id) || !preg_match('/\Aspsync-backup-[0-9]{8}-[0-9]{6}\z/D', $requested_backup_id))) {
+            return false;
+        }
+        $pending = get_option('spsync_api_backup_request');
+        if (is_array($pending) && $pending['created_at'] > time() - 600 && $pending['backup_id'] !== $requested_backup_id) {
+            return false;
+        }
 
         if (!in_array($destination, ['sharepoint', 'device'], true) ||
             ($destination === 'device' && !\SPSync\Helpers\PrivateStorage::valid($private_directory, 'download'))) {
@@ -60,7 +67,7 @@ class BackupEngine
         Settings::set('backup_running', (string) time());
 
         // Generate unique backup ID matching Phase 2 structure
-        $backup_id = 'spsync-backup-' . current_time('Ymd-His');
+        $backup_id = $requested_backup_id ?: 'spsync-backup-' . current_time('Ymd-His');
         Logger::info("Initializing backup orchestrator: $backup_id");
 
         // Define local storage paths within WordPress upload folder

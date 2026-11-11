@@ -1,6 +1,12 @@
 # WordPress SharePoint Backup Plugin
 
-Version 1.2.0. Install `schedule_backup_plugin.zip` through WordPress **Plugins → Add New → Upload Plugin**, then open **SharePoint Backup**.
+Version 1.2.1. Install `schedule_backup_plugin.zip` through WordPress **Plugins → Add New → Upload Plugin**, then open **SharePoint Backup**.
+
+## Connect another dashboard through the API
+
+Copy the **Secret API Key** from Overview into the dashboard's backup-plugin connection form with this WordPress site's URL. Authenticated requests use `X-SPSYNC-KEY` under `/wp-json/spsync/v1/`. The SEO backend in the neighboring package now provides a dedicated `/backup-dashboard` page and client-scoped backup API; its SAC publishing token remains separate.
+
+Version 1.2.1 keeps the ID returned by `POST backup/start` unchanged when its worker creates artifacts. `GET backup/status` reports a queued API request before packaging starts and reports identifiable pre-upload failures. The worker still needs WordPress cron or Action Scheduler. API backup commands create SharePoint backups; device downloads remain administrator actions inside WordPress.
 
 ## Choose manual or automatic backups
 
@@ -72,3 +78,10 @@ The harness uses temporary fixture files and WordPress/database stubs. It does n
 - Downloaded ZIPs contain a plugin-compatible backup folder for the existing manual-restoration feature.
 - Separated credential saving from schedule saving so configuration changes preserve the user's choice.
 - Shared private temporary-storage validation between manual upload and device download flows.
+
+## Release notes — 1.2.1
+
+- Preserved API backup IDs from acceptance through worker execution, manifests and polling.
+- Added pending API-command reservation, honest scheduling errors and pre-upload failure status.
+- Explicit API backups no longer reset a separate one-time automatic schedule.
+- Remote verification follows Graph pagination and does not mark backups missing after a failed/incomplete listing.

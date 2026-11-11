@@ -1,6 +1,6 @@
 # Software Requirements Specification — WordPress SharePoint Backup Plugin
 
-Document version: 1.2  
+Document version: 1.2.1  
 Review date: 11 November 2026  
 Scope: `plugin/` source; packaged ZIP assessed separately  
 Basis: the original source plus the 1.1.0 selection/restoration and 1.2.0 manual-device/automatic-cloud workflows and regression harness. This document includes the implementation changes made on 11 November 2026.
@@ -11,13 +11,13 @@ The plugin creates WordPress database/file backups, uploads them to SharePoint t
 
 This SRS is derived from source. **Implemented** means an implementation exists; **Partial** means its limitations materially affect the requirement; **Required gap** identifies behavior needed for reliable operation but not established by the supplied implementation. Acceptance scenarios are proposed checks, not executed production tests.
 
-The Laravel dashboard in `../dashboard/` is an optional remote client. The Python SEO backend requires a different connector (`seo-agentic-connector`); this plugin does not implement that connector's `sac` APIs, article publishing, Yoast synchronization or reverse-push protocol.
+The Laravel dashboard in `../dashboard/` and the Python SEO backend are remote backup clients. For SEO publishing, the Python backend uses a different connector (`seo-agentic-connector`); this plugin does not implement that connector's `sac` APIs, article publishing, Yoast synchronization or reverse-push protocol.
 
 ## 2. Runtime and actors
 
 | Item | Declared or observed requirement |
 |---|---|
-| Plugin identity | WordPress SharePoint Backup Plugin; `SPSYNC_VERSION` 1.2.0 |
+| Plugin identity | WordPress SharePoint Backup Plugin; `SPSYNC_VERSION` 1.2.1 |
 | Declared compatibility | PHP 7.4+, WordPress 6.0+ in entry header; not fully compatibility-tested |
 | Database | WordPress `$wpdb` with MySQL-style SQL |
 | Archive support | ZipArchive preferred; WordPress PclZip fallback |
@@ -60,7 +60,7 @@ Microsoft application permissions and tenant consent must be provisioned externa
 | `restore/ManualRestore.php` | Confirmed background local restoration, actual-destination recovery snapshot and rollback |
 | `tests/run.php` | Isolated regression harness using temporary sites and WordPress/database stubs |
 | `README.md` | Installation, backup-selection and manual-restoration instructions |
-| `schedule_backup_plugin.zip` | Rebuilt 1.2.0 installable package; includes application PHP and README, excludes tests/SRS |
+| `schedule_backup_plugin.zip` | Rebuilt 1.2.1 installable package; includes application PHP and README, excludes tests/SRS |
 
 ### Bootstrap detail that affects deployment
 
@@ -86,7 +86,7 @@ Namespaces use capitalized components (`SPSync\Database`, `SPSync\Api`, etc.), w
 | P-FR-14 | Remove local backup files after successful queue completion and enforce retention. | Partial — final-batch bookkeeping does not establish all-job success |
 | P-FR-15 | Schedule manual, daily, weekly, monthly and one-time backups at a selected WordPress-local start time. | Partial — monthly recurrence is fixed 30-day interval |
 | P-FR-16 | Expose health, diagnostics, latest backup status, logs and remote connection test behind shared-key authentication. | Implemented — REST controller |
-| P-FR-17 | Discover remote backup folders and mark known absent backup IDs missing. | Partial — no completeness/hash validation or pagination |
+| P-FR-17 | Discover remote backup folders and mark known absent backup IDs missing. | Partial — complete paginated listing is required before mutation; folder presence is not a completeness/hash check |
 | P-FR-18 | Before restore, create local rollback SQL and selected-file snapshot, download manifest and enqueue manifest parts. | Implemented preparation, with coverage/concurrency limitations |
 | P-FR-19 | Stream downloads, check supplied SHA-256, retry downloads, validate/extract ZIP parts and import SQL in resumable batches. | Implemented with legacy parser limitations — failures propagate and plugin control tables are preserved |
 | P-FR-20 | On restore failure, attempt rollback and expose failed state. | Partial — rollback now completes SQL batches; remote rollback file coverage remains limited |
@@ -192,9 +192,9 @@ Authentication: all nine routes use `check_auth()`. Missing configured key retur
 | GET | `backups/verify` | Verified/missing/remote identifier arrays and remote count |
 | POST | `database/search-replace` | Require `old_url`, `new_url`; boolean-like `dry_run`; return table/row/replacement counts and duration |
 
-The ID returned by `backup/start` is generated before execution and is not passed to `BackupEngine::run()`, which generates its own ID later. Consumers must not assume these identifiers are identical.
+As of 1.2.1, the ID returned by `backup/start` is reserved in a WordPress option and passed through the scheduled hook into `BackupEngine::run()`. Polling returns that queued ID before packaging and reports identifiable failures that occur before upload queue insertion. Duplicate queued API starts are rejected, scheduler failures are returned honestly, and explicit API requests do not reset an independent one-time automatic schedule.
 
-Remote verification reads one Graph children response. It accepts any returned folder name as a remote backup, with additional loose file-name handling, and does not inspect manifest/part validity. A failed children request can be treated as an empty listing and cause local jobs to be marked missing. Already-missing item rows are not restored to `done` when a folder reappears.
+Remote verification now follows Graph listing pages and returns an error before changing statuses when the listing fails, is incomplete, or supplies an untrusted pagination URL. It still accepts returned folders with loose file-name handling and does not inspect manifest/part validity. Already-missing item rows are not restored to `done` when a folder reappears.
 
 ## 8. Data and configuration
 
@@ -236,7 +236,7 @@ WP-Cron timing depends on an external cron driver or site traffic. No exact exec
 | P-NFR-08 | Constrain all filesystem writes/extraction to intended destinations. | Local upload filenames/private staging and ZIP entries validated; remote manifest filename handling remains a gap |
 | P-NFR-09 | Enforce retention over the complete remote inventory and only after confirmed deletion. | Required gap — pagination and delete-result handling |
 | P-NFR-10 | Bound memory and work on large sites. | Partial — row/chunk batching exists, but scanning, migration and some archive work hold full collections |
-| P-NFR-11 | Provide repeatable backup/restore integration tests. | 91 isolated regression checks, three prior multipart-upload cases, and three current HTTP-download cases passed; live WordPress/SharePoint integration remains pending |
+| P-NFR-11 | Provide repeatable backup/restore integration tests. | 105 isolated plugin checks plus prior multipart-upload/download cases passed; live WordPress/SharePoint integration remains pending |
 
 No backup encryption-at-rest feature for SQL/ZIP artifacts, incremental backups, verified point-in-time database consistency, multisite-wide orchestration, or measured RTO/RPO is implemented or established by the inspected source.
 
@@ -283,5 +283,11 @@ The authenticated `admin_post_spsync_download_backup` action requires `manage_op
 Access expires 24 hours after the request. `spsync_expire_device_backup` schedules private-copy cleanup; cleanup timing depends on cron and filesystem access, and may wait for active work. Only server files are affected. Creating artifacts plus the combined ZIP requires sufficient temporary disk space. Existing PHP/server execution, archive-library and filesystem limits still apply.
 
 Acceptance checks added for 1.2.0 cover manual/automatic selection and schedule persistence, private cloud-independent creation, absence of SharePoint queue activity, owner/nonce restrictions, download readiness/expiry, cancellation, cleanup, package completeness and manual-restore compatibility. The regression harness passes 91 checks. Three HTTP cases verify exact ZIP response bytes/attachment headers and reject another user and an invalid nonce. These are isolated fixtures, not a live WordPress production deployment.
+
+## 14. External SEO dashboard integration in 1.2.1
+
+The neighboring SEO backend now has a focused `/backup-dashboard` page and JWT-authenticated client-scoped backup APIs. It stores this plugin's API key encrypted, independently from SAC/publishing credentials; sends it in `X-SPSYNC-KEY`; triggers SharePoint backup/restore; polls status; verifies remote folders; and fetches logs/system information. A real site must be paired with its URL/key before use. See the backend's `BACKUP_API.md` for its contracts and operating limits.
+
+Plugin acceptance checks now total 105, including the stable API ID handoff, duplicate admission, pending monitoring, pre-upload worker failure, schedule failure, one-time schedule preservation, Graph pagination, and fail-safe listing errors. Plugin changes remain committed in the parent repository; the SEO backend remains outside Git tracking by user instruction.
 
 Open decisions: supported server/filesystem platforms, backup exclusion policy, per-site cloud isolation, full versus selective rollback coverage, lock/job identity design, trusted artifact format, and recovery targets.

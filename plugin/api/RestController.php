@@ -236,6 +236,13 @@ class RestController extends WP_REST_Controller
             'restore_job_id' => Settings::get('restore_job_active'),
             'status' => Settings::get('restore_status', 'completed'),
         ];
+        $pending = get_option('spsync_api_backup_request');
+        if (is_array($pending) && $pending['created_at'] > time() - 600 && !Settings::get('backup_running')) {
+            return new WP_REST_Response([
+                'backup_id' => $pending['backup_id'], 'status' => 'queued', 'progress' => 0,
+                'total_files' => 0, 'uploaded_files' => 0, 'restore' => $restore,
+            ], 200);
+        }
 
         // Check if queue table exists
         if ($wpdb->get_var("SHOW TABLES LIKE '$table'") === null) {
@@ -248,6 +255,14 @@ class RestController extends WP_REST_Controller
 
         // Get the latest backup job ID active in the queue
         $latest_backup_id = $wpdb->get_var("SELECT backup_id FROM $table ORDER BY id DESC LIMIT 1");
+        $failed = get_option('spsync_api_backup_failed');
+        if (is_array($failed) && (!$latest_backup_id || strcmp($failed['backup_id'], $latest_backup_id) >= 0)) {
+            return new WP_REST_Response([
+                'backup_id' => $failed['backup_id'], 'status' => 'failed', 'progress' => 0,
+                'total_files' => 0, 'uploaded_files' => 0, 'restore' => $restore,
+                'message' => 'The backup worker failed. Check execution logs.',
+            ], 200);
+        }
         
         if (empty($latest_backup_id)) {
             return new WP_REST_Response([
@@ -326,13 +341,28 @@ class RestController extends WP_REST_Controller
      */
     public function start_backup($request)
     {
+        $pending = get_option('spsync_api_backup_request');
+        if (is_array($pending) && $pending['created_at'] <= time() - 600) {
+            delete_option('spsync_api_backup_request');
+        }
+        if (Settings::get('backup_running') || get_option('spsync_restore_start_lock') ||
+            in_array(Settings::get('restore_status'), ['downloading', 'extracting', 'restoring_database', 'cleanup'], true)) {
+            return new \WP_Error('backup_busy', 'Another backup or restoration is already running.', ['status' => 409]);
+        }
         $backup_id = 'spsync-backup-' . current_time('Ymd-His');
+        if (!add_option('spsync_api_backup_request', ['backup_id' => $backup_id, 'created_at' => time()], '', false)) {
+            return new \WP_Error('backup_busy', 'A backup is already queued.', ['status' => 409]);
+        }
         
         // Trigger backup locally and enqueue upload in background
         if (function_exists('as_enqueue_async_action')) {
-            as_enqueue_async_action(\SPSync\Scheduler\Scheduler::EVENT_HOOK);
+            $scheduled = as_enqueue_async_action(\SPSync\Scheduler\Scheduler::EVENT_HOOK, [$backup_id]);
         } else {
-            wp_schedule_single_event(time() + 2, \SPSync\Scheduler\Scheduler::EVENT_HOOK);
+            $scheduled = wp_schedule_single_event(time() + 2, \SPSync\Scheduler\Scheduler::EVENT_HOOK, [$backup_id]);
+        }
+        if (!$scheduled || is_wp_error($scheduled)) {
+            delete_option('spsync_api_backup_request');
+            return new \WP_Error('backup_schedule_failed', 'Could not schedule the backup worker.', ['status' => 500]);
         }
 
         return new WP_REST_Response([
@@ -348,8 +378,14 @@ class RestController extends WP_REST_Controller
     public function start_restore($request)
     {
         $backup_id = $request->get_param('backup_id');
-        if (empty($backup_id)) {
+        if (!is_string($backup_id) || !preg_match('/\Aspsync-backup-[A-Za-z0-9_-]{1,80}\z/D', $backup_id)) {
             return new \WP_Error('missing_parameter', 'Missing backup_id parameter.', [ 'status' => 400 ]);
+        }
+        $pending = get_option('spsync_api_backup_request');
+        if (Settings::get('backup_running') || get_option('spsync_restore_start_lock') ||
+            (is_array($pending) && $pending['created_at'] > time() - 600) ||
+            in_array(Settings::get('restore_status'), ['downloading', 'extracting', 'restoring_database', 'cleanup'], true)) {
+            return new \WP_Error('restore_busy', 'Another backup or restoration is already queued or running.', ['status' => 409]);
         }
 
         $restore_job_id = \SPSync\Restore\RestoreManager::start_restore($backup_id);
@@ -406,6 +442,22 @@ class RestController extends WP_REST_Controller
         // Fetch all children items in the SharePoint root folder
         $children_endpoint = sprintf('drives/%s/items/%s/children', $drive_id, $root_folder_id);
         $children_data = GraphClient::request($children_endpoint);
+        if (!$children_data || !isset($children_data['value']) || !is_array($children_data['value'])) {
+            return new \WP_Error('verification_failed', 'SharePoint could not be listed. Existing backup statuses were not changed.', ['status' => 502]);
+        }
+        $pages = 0;
+        while (!empty($children_data['@odata.nextLink'])) {
+            $next = $children_data['@odata.nextLink'];
+            if (!is_string($next) || strpos($next, 'https://graph.microsoft.com/v1.0/') !== 0 || ++$pages > 100) {
+                return new \WP_Error('verification_failed', 'SharePoint returned an unsupported or incomplete listing.', ['status' => 502]);
+            }
+            $page = GraphClient::request(substr($next, strlen('https://graph.microsoft.com/v1.0/')));
+            if (!$page || !isset($page['value']) || !is_array($page['value'])) {
+                return new \WP_Error('verification_failed', 'SharePoint could not be fully listed. Existing statuses were not changed.', ['status' => 502]);
+            }
+            $children_data['value'] = array_merge($children_data['value'], $page['value']);
+            $children_data['@odata.nextLink'] = $page['@odata.nextLink'] ?? null;
+        }
 
         $remote_backups = [];
         if ($children_data && !empty($children_data['value']) && is_array($children_data['value'])) {
