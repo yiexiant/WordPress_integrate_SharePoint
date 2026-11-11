@@ -40,3 +40,6 @@ Thumbs.db
 # Legacy temporary directories
 /backup_dashboard/
 /backup_plugin_V2/
+
+# SEO backend is outside the Git scope of this project
+/seo_agentic_backend_package 1/
