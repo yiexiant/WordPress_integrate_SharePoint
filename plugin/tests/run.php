@@ -26,6 +26,8 @@ namespace {
     use SPSync\Backup\BackupSelection;
     use SPSync\Backup\BackupEngine;
     use SPSync\Backup\FileScanner;
+    use SPSync\Backup\DeviceBackup;
+    use SPSync\Helpers\PrivateStorage;
     use SPSync\Helpers\Settings;
     use SPSync\Restore\LocalBackup;
     use SPSync\Restore\ManualRestore;
@@ -36,6 +38,8 @@ namespace {
     define('ABSPATH', $fixture . '/site/');
     define('WP_CONTENT_DIR', ABSPATH . 'wp-content');
     define('MINUTE_IN_SECONDS', 60);
+    define('DAY_IN_SECONDS', 86400);
+    define('WEEK_IN_SECONDS', 604800);
     define('ARRAY_N', 'ARRAY_N');
     define('ARRAY_A', 'ARRAY_A');
     define('DB_HOST', 'test-host');
@@ -46,6 +50,7 @@ namespace {
     $current_user_allowed = true;
     $nonce_allowed = true;
     $metadata = [];
+    $schedule_fail = false;
 
     class WP_Error
     {
@@ -103,17 +108,32 @@ namespace {
         return true;
     }
     function delete_option($key) { global $options; unset($options[$key]); }
+    function update_option($key, $value, $autoload = null) { global $options; $options[$key] = $value; return true; }
     function get_option($key, $default = false) { global $options; return $options[$key] ?? $default; }
     function wp_schedule_single_event($time, $hook, $args = []) {
-        global $scheduled;
+        global $scheduled, $schedule_fail;
+        if ($schedule_fail) { return false; }
         $scheduled[] = [$hook, $args];
         return true;
+    }
+    function wp_schedule_event($time, $frequency, $hook) { return wp_schedule_single_event($time, $hook, [$frequency]); }
+    function wp_clear_scheduled_hook($hook, $args = []) {
+        global $scheduled;
+        $scheduled = array_values(array_filter($scheduled, function ($event) use ($hook, $args) { return $event[0] !== $hook || ($args && $event[1] !== $args); }));
+        return true;
+    }
+    function wp_next_scheduled($hook) {
+        global $scheduled;
+        foreach ($scheduled as $event) { if ($event[0] === $hook) { return time() + 3600; } }
+        return false;
     }
     function current_user_can($capability) { global $current_user_allowed; return $current_user_allowed; }
     function check_admin_referer($nonce) { global $nonce_allowed; if (!$nonce_allowed) { throw new \RuntimeException('invalid nonce'); } }
     function wp_die($message) { throw new \RuntimeException($message); }
     function get_current_user_id() { return 1; }
-    function get_user_meta($id, $key, $single = true) { global $metadata; return $metadata[$key] ?? ''; }
+    function get_user_meta($id, $key, $single = true) { global $metadata; return $metadata[$id][$key] ?? ''; }
+    function update_user_meta($id, $key, $value) { global $metadata; $metadata[$id][$key] = $value; return true; }
+    function delete_user_meta($id, $key) { global $metadata; unset($metadata[$id][$key]); return true; }
     function admin_url($path) { return '/wp-admin/' . $path; }
     function esc_attr($value) { return htmlspecialchars((string) $value, ENT_QUOTES); }
     function esc_html($value) { return esc_attr($value); }
@@ -124,6 +144,11 @@ namespace {
     function sanitize_text_field($value) { return strip_tags($value); }
     function wp_nonce_field($value) { echo '<input type="hidden" name="_wpnonce" value="test" />'; }
     function checked($value, $expected = true) { if ((string) $value === (string) $expected) { echo 'checked="checked"'; } }
+    function selected($value, $expected = true) { if ((string) $value === (string) $expected) { echo 'selected="selected"'; } }
+    function wp_date($format, $timestamp = null) { return date($format, $timestamp ?? time()); }
+    function human_time_diff($timestamp) { return 'one hour'; }
+    function esc_url_raw($value) { return $value; }
+    function wp_nonce_url($url, $action) { return $url . '&_wpnonce=test'; }
     function wp_max_upload_size() { return 10485760; }
     function wp_unslash($value) { return $value; }
     function add_query_arg($values, $url) { return $url . '?' . http_build_query($values); }
@@ -164,6 +189,7 @@ namespace {
     }
 
     $staging_directories = [];
+    $device_directories = [];
     try {
         write_fixture('index.php', 'core');
         $plugin = write_fixture('wp-content/plugins/example/plugin.php', 'plugin');
@@ -322,8 +348,82 @@ namespace {
         try { \SPSync\Admin\SettingsPage::handle_restore_uploaded(); verify(false, 'Missing confirmation was allowed.'); }
         catch (\RuntimeException $error) { verify(strpos($error->getMessage(), 'Confirm') !== false, 'Restore requires explicit overwrite confirmation.'); }
         verify(Settings::get('restore_status') === 'failed', 'Missing confirmation does not launch or alter a restore.');
+
+        Settings::set('restore_status', 'completed');
+        Settings::set('backup_frequency', 'weekly');
+        Settings::set('backup_time', '03:45');
+        BackupSelection::save('selected', ['uploads'], false);
+        \SPSync\Queue\QueueManager::$triggered = false;
+        $queue_count = count($wpdb->items);
+        $device_id = DeviceBackup::start(1);
+        verify(is_string($device_id), 'Device backup can be started without SharePoint credentials.');
+        $device_job = DeviceBackup::get($device_id, 1);
+        $device_directories[] = $device_job['directory'];
+        verify($device_job['status'] === 'queued' && PrivateStorage::valid($device_job['directory'], 'download'), 'Device jobs use private storage outside the website.');
+        verify(!DeviceBackup::get($device_id, 2) && is_wp_error(DeviceBackup::download($device_id, 2)), 'Another user cannot inspect or download the backup.');
+        verify(is_wp_error(DeviceBackup::start(1)), 'Reject duplicate queued device backups.');
+        verify(is_wp_error(DeviceBackup::download($device_id, 1)), 'A queued backup cannot be downloaded.');
+        DeviceBackup::run($device_id);
+        $device_job = DeviceBackup::get($device_id, 1);
+        verify($device_job['status'] === 'ready', 'Background device backup becomes ready.');
+        verify(!\SPSync\Queue\QueueManager::$triggered && count($wpdb->items) === $queue_count, 'Device backup never enqueues SharePoint uploads.');
+        verify(!Settings::get('backup_running'), 'Device backup releases its creation lock.');
+        verify(Settings::get('backup_frequency') === 'weekly', 'A manual device backup preserves the automatic schedule.');
+        $download_path = DeviceBackup::download($device_id, 1);
+        verify(is_string($download_path) && is_file($download_path), 'Ready backup has an owner-only download path.');
+        $zip = new \ZipArchive(); $zip->open($download_path);
+        $source_manifest = json_decode(file_get_contents($device_job['directory'] . '/artifacts/manifest.json'), true);
+        $folder = $source_manifest['backup_id'];
+        verify($zip->numFiles === count($source_manifest['parts']) + 1, 'Download ZIP includes the manifest and every backup part.');
+        $roundtrip = PrivateStorage::create('import');
+        $staging_directories[] = $roundtrip;
+        file_put_contents($roundtrip . '/manifest.json', $zip->getFromName($folder . '/manifest.json'));
+        foreach ($source_manifest['parts'] as $part) { file_put_contents($roundtrip . '/' . $part['filename'], $zip->getFromName($folder . '/' . $part['filename'])); }
+        $zip->close();
+        verify(!is_wp_error(LocalBackup::validate($roundtrip)), 'Extracted device ZIP is compatible with manual restore.');
+        $_POST = [];
+        $_GET['tab'] = 'download';
+        ob_start(); \SPSync\Admin\SettingsPage::render_settings_page(); $html = ob_get_clean();
+        verify(strpos($html, 'Download ZIP to My Device') !== false && strpos($html, 'backup_job=') !== false, 'Admin renders an authenticated device download link.');
+        verify(!DeviceBackup::discard($device_id, 2), 'Another user cannot remove the server copy.');
+        $modified = $device_job; $modified['expires_at'] = time() - 1;
+        update_option('spsync_device_job_' . $device_id, $modified);
+        verify(is_wp_error(DeviceBackup::download($device_id, 1)), 'Expired backups cannot be downloaded.');
+        DeviceBackup::expire($device_id);
+        verify(!file_exists($device_job['directory']) && !DeviceBackup::get($device_id, 1), 'Expiry removes the private server copy and job.');
+
+        $_GET['tab'] = 'automation';
+        $_POST = ['spsync_save_settings' => '1', 'backup_method' => 'manual'];
+        ob_start(); \SPSync\Admin\SettingsPage::render_settings_page(); $html = ob_get_clean();
+        verify(Settings::get('backup_frequency') === 'manual' && !wp_next_scheduled(\SPSync\Scheduler\Scheduler::EVENT_HOOK), 'Choosing manual turns off automatic backup events.');
+        verify(Settings::get('backup_time') === '03:45', 'Switching to manual preserves previous automatic execution time.');
+        verify(strpos($html, 'name="backup_method" value="manual" checked') !== false, 'Manual method is visibly selected after saving.');
+        $_POST = ['spsync_save_settings' => '1', 'backup_method' => 'automatic', 'backup_frequency' => 'daily', 'backup_time' => '04:30'];
+        ob_start(); \SPSync\Admin\SettingsPage::render_settings_page(); $html = ob_get_clean();
+        verify(Settings::get('backup_frequency') === 'daily' && wp_next_scheduled(\SPSync\Scheduler\Scheduler::EVENT_HOOK), 'Choosing automatic creates the selected schedule.');
+        verify(strpos($html, 'name="backup_method" value="automatic" checked') !== false, 'Automatic method is visibly selected after saving.');
+        $_GET['tab'] = 'credentials';
+        $_POST = ['spsync_save_settings' => '1', 'tenant_id' => '', 'client_id' => '', 'client_secret' => '', 'site_url' => '', 'document_library' => '', 'root_folder' => '', 'encrypt_secret' => '1'];
+        ob_start(); \SPSync\Admin\SettingsPage::render_settings_page(); ob_end_clean();
+        verify(Settings::get('backup_frequency') === 'daily' && Settings::get('backup_time') === '04:30', 'Saving credentials does not reset the chosen method or schedule.');
+        $_POST = [];
+        $schedule_fail = true;
+        verify(is_wp_error(DeviceBackup::start(1)), 'Scheduling failure is surfaced without a usable device job.');
+        $schedule_fail = false;
+        $device_id = DeviceBackup::start(1);
+        $device_job = DeviceBackup::get($device_id, 1);
+        $device_directories[] = $device_job['directory'];
+        verify(DeviceBackup::discard($device_id, 1) && !file_exists($device_job['directory']), 'Owner can cancel a queued backup and remove its server storage.');
+        $current_user_allowed = false;
+        try { \SPSync\Admin\SettingsPage::handle_device_backup(); verify(false, 'Unauthorized device backup was allowed.'); }
+        catch (\RuntimeException $error) { verify(strpos($error->getMessage(), 'permission') !== false, 'Creating device backups requires administrator capability.'); }
+        $current_user_allowed = true;
+        $nonce_allowed = false;
+        try { \SPSync\Admin\SettingsPage::handle_download_backup(); verify(false, 'Invalid download nonce was allowed.'); }
+        catch (\RuntimeException $error) { verify($error->getMessage() === 'invalid nonce', 'Device download requires a valid nonce.'); }
         echo "PASS: $checks regression checks\n";
     } finally {
+        foreach ($device_directories as $path) { PrivateStorage::remove($path, 'download'); }
         foreach ($staging_directories as $path) { LocalBackup::remove($path); }
         // The fixture was created here with a random name; never recurse outside it.
         if (realpath(dirname($fixture)) === realpath(sys_get_temp_dir()) && strpos(basename($fixture), 'spsync-tests-') === 0) {

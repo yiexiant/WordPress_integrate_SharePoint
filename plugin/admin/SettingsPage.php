@@ -25,6 +25,9 @@ class SettingsPage
         add_action('admin_post_spsync_upload_backup', [__CLASS__, 'handle_upload_backup']);
         add_action('admin_post_spsync_restore_uploaded', [__CLASS__, 'handle_restore_uploaded']);
         add_action('admin_post_spsync_discard_upload', [__CLASS__, 'handle_discard_upload']);
+        add_action('admin_post_spsync_create_device_backup', [__CLASS__, 'handle_device_backup']);
+        add_action('admin_post_spsync_download_backup', [__CLASS__, 'handle_download_backup']);
+        add_action('admin_post_spsync_discard_device_backup', [__CLASS__, 'handle_discard_device_backup']);
     }
 
     private static function authorize($nonce)
@@ -100,6 +103,50 @@ class SettingsPage
         self::redirect_notice('restore', true, 'Pending upload discarded.');
     }
 
+    public static function handle_device_backup()
+    {
+        self::authorize('spsync_create_device_backup');
+        $result = \SPSync\Backup\DeviceBackup::start(get_current_user_id());
+        self::redirect_notice('download', !is_wp_error($result), is_wp_error($result) ? $result->get_error_message() : 'Your device backup is queued. Refresh this page, then click Download ZIP when it is ready.');
+    }
+
+    public static function handle_discard_device_backup()
+    {
+        self::authorize('spsync_discard_device_backup');
+        $id = isset($_POST['backup_job']) && is_string($_POST['backup_job']) ? wp_unslash($_POST['backup_job']) : '';
+        $removed = \SPSync\Backup\DeviceBackup::discard($id, get_current_user_id());
+        self::redirect_notice('download', $removed, $removed ? 'The temporary server copy was removed. Files already downloaded to your device were not changed.' : 'This backup cannot be removed while it is running, or is no longer available.');
+    }
+
+    public static function handle_download_backup()
+    {
+        $id = isset($_GET['backup_job']) && is_string($_GET['backup_job']) ? wp_unslash($_GET['backup_job']) : '';
+        self::authorize('spsync_download_backup_' . $id);
+        $path = \SPSync\Backup\DeviceBackup::download($id, get_current_user_id());
+        if (is_wp_error($path)) {
+            wp_die(esc_html($path->get_error_message()));
+        }
+        $handle = fopen($path, 'rb');
+        if (!$handle) {
+            wp_die('The backup could not be opened. Please try again.');
+        }
+        @set_time_limit(0);
+        while (ob_get_level()) {
+            ob_end_clean();
+        }
+        nocache_headers();
+        send_nosniff_header();
+        header('Content-Type: application/zip');
+        header('Content-Disposition: attachment; filename="' . basename($path) . '"');
+        header('Content-Length: ' . filesize($path));
+        while (!feof($handle) && !connection_aborted()) {
+            echo fread($handle, 1048576);
+            flush();
+        }
+        fclose($handle);
+        exit;
+    }
+
     /**
      * Register main sidebar menu item in WordPress Admin side panel.
      */
@@ -147,10 +194,7 @@ class SettingsPage
 
         check_admin_referer('spsync_manual_backup_action');
 
-        // Clear stale lock before initiating manual test run
-        Settings::delete('backup_running');
-
-        $backup_id = \SPSync\Backup\BackupEngine::run(true);
+        $backup_id = \SPSync\Backup\BackupEngine::run();
         
         if ($backup_id) {
             $message = urlencode("Manual backup successfully initiated! (Backup ID: $backup_id). Live progress is logged in System Logs.");
@@ -197,33 +241,40 @@ class SettingsPage
         if (isset($_POST['spsync_save_settings'])) {
             check_admin_referer('spsync_save_settings_action');
 
-            Settings::set('tenant_id', sanitize_text_field($_POST['tenant_id']));
-            Settings::set('client_id', sanitize_text_field($_POST['client_id']));
+            if ($active_tab === 'credentials') {
+                Settings::set('tenant_id', sanitize_text_field($_POST['tenant_id']));
+                Settings::set('client_id', sanitize_text_field($_POST['client_id']));
             
-            $new_secret = $_POST['client_secret'];
-            if ($new_secret !== '••••••••••••••••••••••••••••••••') {
+                $new_secret = $_POST['client_secret'] === '••••••••••••••••••••••••••••••••' ? Settings::get('client_secret') : wp_unslash($_POST['client_secret']);
+                Settings::set('encrypt_secret', !empty($_POST['encrypt_secret']) ? '1' : '0');
                 Settings::set('client_secret', $new_secret);
+
+                Settings::set('site_url', esc_url_raw($_POST['site_url']));
+                Settings::set('document_library', sanitize_text_field($_POST['document_library']));
+                Settings::set('root_folder', sanitize_text_field($_POST['root_folder']));
+
             }
 
-            Settings::set('site_url', esc_url_raw($_POST['site_url']));
-            Settings::set('document_library', sanitize_text_field($_POST['document_library']));
-            Settings::set('root_folder', sanitize_text_field($_POST['root_folder']));
-            Settings::set('encrypt_secret', isset($_POST['encrypt_secret']) ? '1' : '0');
+            if ($active_tab === 'automation') {
+                $method = sanitize_text_field($_POST['backup_method'] ?? 'manual');
+                $new_frequency = $method === 'automatic' ? sanitize_text_field($_POST['backup_frequency'] ?? 'daily') : 'manual';
+                if (!in_array($new_frequency, ['manual', 'daily', 'weekly', 'monthly', 'once'], true)) {
+                    $new_frequency = 'manual';
+                }
+                $new_time      = sanitize_text_field($_POST['backup_time'] ?? Settings::get('backup_time', '02:00'));
+                $new_dow       = sanitize_text_field($_POST['backup_day_of_week'] ?? Settings::get('backup_day_of_week', '0'));
+                $new_dom       = sanitize_text_field($_POST['backup_day_of_month'] ?? Settings::get('backup_day_of_month', '1'));
+                $new_date      = sanitize_text_field($_POST['backup_specific_date'] ?? Settings::get('backup_specific_date', ''));
 
-            $new_frequency = sanitize_text_field($_POST['backup_frequency'] ?? 'manual');
-            $new_time      = sanitize_text_field($_POST['backup_time'] ?? '02:00');
-            $new_dow       = sanitize_text_field($_POST['backup_day_of_week'] ?? '0');
-            $new_dom       = sanitize_text_field($_POST['backup_day_of_month'] ?? '1');
-            $new_date      = sanitize_text_field($_POST['backup_specific_date'] ?? '');
+                Settings::set('backup_frequency', $new_frequency);
+                Settings::set('backup_time', $new_time);
+                Settings::set('backup_day_of_week', $new_dow);
+                Settings::set('backup_day_of_month', $new_dom);
+                Settings::set('backup_specific_date', $new_date);
+                Settings::set('retention_limit', sanitize_text_field($_POST['retention_limit'] ?? Settings::get('retention_limit', '30')));
 
-            Settings::set('backup_frequency', $new_frequency);
-            Settings::set('backup_time', $new_time);
-            Settings::set('backup_day_of_week', $new_dow);
-            Settings::set('backup_day_of_month', $new_dom);
-            Settings::set('backup_specific_date', $new_date);
-            Settings::set('retention_limit', sanitize_text_field($_POST['retention_limit']));
-
-            \SPSync\Scheduler\Scheduler::update_schedule($new_frequency, $new_time, $new_dow, $new_dom, $new_date);
+                \SPSync\Scheduler\Scheduler::update_schedule($new_frequency, $new_time, $new_dow, $new_dom, $new_date);
+            }
 
             if (isset($_POST['regenerate_api_key'])) {
                 if (function_exists('random_bytes')) {
@@ -432,7 +483,7 @@ class SettingsPage
                     <?php if ($is_configured) : ?>
                         <span class="spsync-badge spsync-badge-success">● Connected & Configured</span>
                     <?php else : ?>
-                        <span class="spsync-badge spsync-badge-warning">● Credentials Needed</span>
+                        <span class="spsync-badge spsync-badge-warning">● Device backup available · SharePoint not configured</span>
                     <?php endif; ?>
                 </div>
             </div>
@@ -446,7 +497,10 @@ class SettingsPage
                     <span class="dashicons dashicons-lock"></span> SharePoint & OAuth Config
                 </a>
                 <a href="<?php echo esc_url(admin_url('admin.php?page=' . self::MENU_SLUG . '&tab=automation')); ?>" class="spsync-tab-item <?php echo $active_tab === 'automation' ? 'active' : ''; ?>">
-                    <span class="dashicons dashicons-calendar-alt"></span> Automation & Retention
+                    <span class="dashicons dashicons-calendar-alt"></span> Backup Method & Schedule
+                </a>
+                <a href="<?php echo esc_url(admin_url('admin.php?page=' . self::MENU_SLUG . '&tab=download')); ?>" class="spsync-tab-item <?php echo $active_tab === 'download' ? 'active' : ''; ?>">
+                    <span class="dashicons dashicons-download"></span> Manual Backup & Download
                 </a>
                 <a href="<?php echo esc_url(admin_url('admin.php?page=' . self::MENU_SLUG . '&tab=contents')); ?>" class="spsync-tab-item <?php echo $active_tab === 'contents' ? 'active' : ''; ?>">
                     <span class="dashicons dashicons-portfolio"></span> Backup Contents
@@ -464,15 +518,17 @@ class SettingsPage
                 <div class="spsync-grid">
                     <!-- Manual Backup Execution Card -->
                     <div class="spsync-card">
-                        <h3 class="spsync-card-title"><span class="dashicons dashicons-backup" style="color: #dc2626;"></span> Manual Backup Test</h3>
+                        <h3 class="spsync-card-title"><span class="dashicons dashicons-backup" style="color: #dc2626;"></span> Back Up Your Website</h3>
                         <p style="color: #64748b; font-size: 0.9rem; line-height: 1.5; margin-bottom: 20px;">
-                            Run a backup using your saved Backup Contents selection and upload it to SharePoint. The default selection is the entire website and database.
+                            Choose manual backups saved to your device or automatic backups to SharePoint in Backup Method & Schedule. Both use your saved Backup Contents selection; the default is the entire website and database.
                         </p>
+                        <p><a class="spsync-btn-primary" href="<?php echo esc_url(admin_url('admin.php?page=' . self::MENU_SLUG . '&tab=download')); ?>">Create Backup for My Device</a></p>
+                        <p><a href="<?php echo esc_url(admin_url('admin.php?page=' . self::MENU_SLUG . '&tab=automation')); ?>">Choose Backup Method & Schedule</a></p>
                         <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                             <input type="hidden" name="action" value="spsync_run_manual_backup" />
                             <?php wp_nonce_field('spsync_manual_backup_action'); ?>
                             <button type="submit" class="spsync-btn-primary" style="width: 100%; justify-content: center;">
-                                <span class="dashicons dashicons-controls-play"></span> Run Backup Now (Test Workflow)
+                                <span class="dashicons dashicons-controls-play"></span> Back Up to SharePoint Now
                             </button>
                         </form>
                         <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-top: 10px;">
@@ -519,6 +575,46 @@ class SettingsPage
                         </div>
                     </div>
                 </div>
+            <?php endif; ?>
+
+            <?php if ($active_tab === 'download') : ?>
+                <?php
+                $device_job_id = get_user_meta(get_current_user_id(), 'spsync_device_backup', true);
+                $device_job = \SPSync\Backup\DeviceBackup::get($device_job_id, get_current_user_id());
+                ?>
+                <div class="spsync-card" style="margin-bottom: 24px;">
+                    <h3 class="spsync-card-title">Manual Backup to My Device</h3>
+                    <p>Create a backup whenever you want, then download its ZIP to your computer or phone. No SharePoint account or credentials are needed.</p>
+                    <p>Your saved <a href="<?php echo esc_url(admin_url('admin.php?page=' . self::MENU_SLUG . '&tab=contents')); ?>">Backup Contents</a> selection is used. This does not change your automatic backup schedule.</p>
+                    <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                        <input type="hidden" name="action" value="spsync_create_device_backup" />
+                        <?php wp_nonce_field('spsync_create_device_backup'); ?>
+                        <button type="submit" class="spsync-btn-primary">Create Backup for My Device</button>
+                    </form>
+                    <p class="description">The backup is prepared in the background. Refresh this page for status. The temporary server copy expires after 24 hours; starting another backup replaces your previous completed server copy. WordPress cron or Action Scheduler must be running.</p>
+                </div>
+                <?php if ($device_job) : ?>
+                    <div class="spsync-card">
+                        <h3 class="spsync-card-title">Your Latest Device Backup</h3>
+                        <p><strong>Status:</strong> <?php echo esc_html($device_job['expires_at'] <= time() ? 'Expired' : ucfirst($device_job['status'])); ?></p>
+                        <?php if ($device_job['error']) : ?><p><?php echo esc_html($device_job['error']); ?></p><?php endif; ?>
+                        <?php if ($device_job['status'] === 'ready' && $device_job['expires_at'] > time()) : ?>
+                            <p><?php echo esc_html($device_job['filename'] . ' — ' . size_format($device_job['filesize'])); ?></p>
+                            <?php $download_url = wp_nonce_url(add_query_arg(['action' => 'spsync_download_backup', 'backup_job' => $device_job_id], admin_url('admin-post.php')), 'spsync_download_backup_' . $device_job_id); ?>
+                            <p><a class="spsync-btn-primary" href="<?php echo esc_url($download_url); ?>">Download ZIP to My Device</a></p>
+                            <p>Your browser controls where the file is saved. For manual restoration later, extract this ZIP and upload the backup folder inside it in Manual Restore.</p>
+                        <?php endif; ?>
+                        <p><a class="spsync-btn-secondary" href="<?php echo esc_url(admin_url('admin.php?page=' . self::MENU_SLUG . '&tab=download')); ?>">Refresh Status</a></p>
+                        <?php if ($device_job['status'] !== 'running') : ?>
+                            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                                <input type="hidden" name="action" value="spsync_discard_device_backup" />
+                                <input type="hidden" name="backup_job" value="<?php echo esc_attr($device_job_id); ?>" />
+                                <?php wp_nonce_field('spsync_discard_device_backup'); ?>
+                                <button type="submit" class="spsync-btn-secondary">Remove Temporary Server Copy</button>
+                            </form>
+                        <?php endif; ?>
+                    </div>
+                <?php endif; ?>
             <?php endif; ?>
 
             <?php if ($active_tab === 'contents') : ?>
@@ -691,17 +787,15 @@ class SettingsPage
                 <form method="post" action="">
                     <?php wp_nonce_field('spsync_save_settings_action'); ?>
                     
-                    <!-- Hidden credentials to preserve when saving automation tab -->
-                    <input type="hidden" name="tenant_id" value="<?php echo esc_attr($tenant_id); ?>" />
-                    <input type="hidden" name="client_id" value="<?php echo esc_attr($client_id); ?>" />
-                    <input type="hidden" name="client_secret" value="••••••••••••••••••••••••••••••••" />
-                    <input type="hidden" name="site_url" value="<?php echo esc_attr($site_url); ?>" />
-                    <input type="hidden" name="document_library" value="<?php echo esc_attr($document_library); ?>" />
-                    <input type="hidden" name="root_folder" value="<?php echo esc_attr($root_folder); ?>" />
-                    <input type="hidden" name="encrypt_secret" value="<?php echo esc_attr($encrypt_secret); ?>" />
-
                     <div class="spsync-card" style="margin-bottom: 24px;">
-                        <h3 class="spsync-card-title"><span class="dashicons dashicons-clock"></span> Automated Schedule & Specific Time Rules</h3>
+                        <h3 class="spsync-card-title"><span class="dashicons dashicons-clock"></span> Choose How to Back Up</h3>
+                        <p><label><input type="radio" name="backup_method" value="manual" <?php checked($backup_frequency, 'manual'); ?> onchange="toggleBackupMethod()" /> <strong>Manual backups to my device</strong></label></p>
+                        <p class="description">You decide when to create and download a backup. Saving this choice turns off automatic backups.</p>
+                        <p><label><input type="radio" name="backup_method" value="automatic" <?php checked($backup_frequency !== 'manual'); ?> onchange="toggleBackupMethod()" /> <strong>Automatic backups to SharePoint</strong></label></p>
+                        <p class="description">Choose a schedule below and configure SharePoint credentials. Your device cannot receive unattended backups while its browser is closed.</p>
+                        <p><a href="<?php echo esc_url(admin_url('admin.php?page=' . self::MENU_SLUG . '&tab=download')); ?>">Create a manual device download now</a></p>
+
+                        <div id="spsync-automatic-options">
                         
                         <?php if ($next_event) : ?>
                             <div style="background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; color: #065f46; font-size: 0.85rem; display: flex; align-items: center; gap: 8px;">
@@ -719,7 +813,6 @@ class SettingsPage
                                 <th scope="row"><label for="backup_frequency"><?php esc_html_e('Backup Frequency', 'schedule-backup-plugin'); ?></label></th>
                                 <td>
                                     <select name="backup_frequency" id="backup_frequency" style="padding: 8px 12px; min-width: 260px;" onchange="toggleScheduleFields(this.value)">
-                                        <option value="manual" <?php selected($backup_frequency, 'manual'); ?>><?php esc_html_e('Manual Only (Disabled)', 'schedule-backup-plugin'); ?></option>
                                         <option value="daily" <?php selected($backup_frequency, 'daily'); ?>><?php esc_html_e('Daily at Specific Time', 'schedule-backup-plugin'); ?></option>
                                         <option value="weekly" <?php selected($backup_frequency, 'weekly'); ?>><?php esc_html_e('Weekly on Specific Day & Time', 'schedule-backup-plugin'); ?></option>
                                         <option value="monthly" <?php selected($backup_frequency, 'monthly'); ?>><?php esc_html_e('Monthly on Specific Date & Time', 'schedule-backup-plugin'); ?></option>
@@ -794,12 +887,20 @@ class SettingsPage
                                 </td>
                             </tr>
                         </table>
+                        </div>
                     </div>
 
-                    <button type="submit" name="spsync_save_settings" class="spsync-btn-primary">Save Automation Settings</button>
+                    <button type="submit" name="spsync_save_settings" class="spsync-btn-primary">Save Backup Method & Schedule</button>
                 </form>
 
                 <script>
+                    function toggleBackupMethod() {
+                        const automatic = document.querySelector('input[name="backup_method"]:checked').value === 'automatic';
+                        const options = document.getElementById('spsync-automatic-options');
+                        options.style.display = automatic ? '' : 'none';
+                        options.querySelectorAll('input,select').forEach(function (input) { input.disabled = !automatic; });
+                        if (automatic) toggleScheduleFields(document.getElementById('backup_frequency').value);
+                    }
                     function toggleScheduleFields(freq) {
                         const rowTime = document.getElementById('row_backup_time');
                         const rowDow = document.getElementById('row_day_of_week');
@@ -811,6 +912,7 @@ class SettingsPage
                         if (rowDom) rowDom.style.display = (freq === 'monthly') ? '' : 'none';
                         if (rowDate) rowDate.style.display = (freq === 'once') ? '' : 'none';
                     }
+                    toggleBackupMethod();
                 </script>
             <?php endif; ?>
 

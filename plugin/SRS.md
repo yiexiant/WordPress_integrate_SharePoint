@@ -1,9 +1,9 @@
 # Software Requirements Specification — WordPress SharePoint Backup Plugin
 
-Document version: 1.1  
+Document version: 1.2  
 Review date: 11 November 2026  
 Scope: `plugin/` source; packaged ZIP assessed separately  
-Basis: the original 21 source PHP files plus the 1.1.0 backup-selection/local-restoration services and regression harness. This document includes the implementation changes made on 11 November 2026.
+Basis: the original source plus the 1.1.0 selection/restoration and 1.2.0 manual-device/automatic-cloud workflows and regression harness. This document includes the implementation changes made on 11 November 2026.
 
 ## 1. Purpose and status conventions
 
@@ -17,7 +17,7 @@ The Laravel dashboard in `../dashboard/` is an optional remote client. The Pytho
 
 | Item | Declared or observed requirement |
 |---|---|
-| Plugin identity | WordPress SharePoint Backup Plugin; `SPSYNC_VERSION` 1.1.0 |
+| Plugin identity | WordPress SharePoint Backup Plugin; `SPSYNC_VERSION` 1.2.0 |
 | Declared compatibility | PHP 7.4+, WordPress 6.0+ in entry header; not fully compatibility-tested |
 | Database | WordPress `$wpdb` with MySQL-style SQL |
 | Archive support | ZipArchive preferred; WordPress PclZip fallback |
@@ -34,11 +34,12 @@ Microsoft application permissions and tenant consent must be provisioned externa
 | Path | Responsibility |
 |---|---|
 | `schedule-backup-plugin.php` | Metadata, constants, namespace autoloading, activation and component hooks |
-| `admin/SettingsPage.php` | Six-tab settings/overview/log UI, backup-selection settings, upload/review/restore actions and original diagnostics |
+| `admin/SettingsPage.php` | Seven-tab UI, manual/automatic method selection, device downloads, backup contents, upload/review/restore and diagnostics |
 | `api/RestController.php` | Shared-key authentication and nine remote endpoints |
 | `database/Installer.php` | Four custom tables and initial settings/API key |
 | `database/DatabaseMigrator.php` | URL matching, recursive serialization-aware replacement and cache flushing |
 | `helpers/Settings.php`, `Encryption.php` | Custom settings persistence; client-secret encryption/decryption |
+| `helpers/PrivateStorage.php` | Validate/create/remove private import and device-download temporary directories |
 | `logger/Logger.php` | Structured database logs and daily 30-day cleanup |
 | `auth/OAuth.php` | Client-credentials token acquisition and transient caching |
 | `auth/GraphClient.php` | Graph requests and cached site/drive/root-folder discovery |
@@ -46,6 +47,7 @@ Microsoft application permissions and tenant consent must be provisioned externa
 | `backup/DatabaseBackup.php` | SQL dump of prefix-matching tables |
 | `backup/FileScanner.php` | Installation traversal and exclusions |
 | `backup/BackupSelection.php` | Discover wp-content directories, validate/persist selected scope and optional database inclusion |
+| `backup/DeviceBackup.php` | Background private backup creation, owner-bound download jobs, ZIP packaging, cancellation and expiry |
 | `backup/ZipBuilder.php` | Independent ZIP parts grouped by input size |
 | `backup/Retention.php` | Oldest matching remote folder pruning |
 | `queue/QueueManager.php` | Background batches and upload completion cleanup |
@@ -58,7 +60,7 @@ Microsoft application permissions and tenant consent must be provisioned externa
 | `restore/ManualRestore.php` | Confirmed background local restoration, actual-destination recovery snapshot and rollback |
 | `tests/run.php` | Isolated regression harness using temporary sites and WordPress/database stubs |
 | `README.md` | Installation, backup-selection and manual-restoration instructions |
-| `schedule_backup_plugin.zip` | Rebuilt 1.1.0 installable package; includes application PHP and README, excludes tests/SRS |
+| `schedule_backup_plugin.zip` | Rebuilt 1.2.0 installable package; includes application PHP and README, excludes tests/SRS |
 
 ### Bootstrap detail that affects deployment
 
@@ -77,7 +79,7 @@ Namespaces use capitalized components (`SPSync\Database`, `SPSync\Api`, etc.), w
 | P-FR-07 | Scan the WordPress installation, excluding backup/cache/temp/log directories and archive/log/temp extensions. | Implemented — file scanner |
 | P-FR-08 | Build independent ZIP parts from groups targeting 52,428,800 input bytes, with ZipArchive or PclZip. | Implemented — zip builder; individual oversized files are not split |
 | P-FR-09 | Produce the selected SQL/ZIP components and a manifest with selection metadata, per-part sizes and SHA-256 hashes; enqueue every component including manifest. | Implemented — backup engine; full website/database remains default |
-| P-FR-10 | Prevent ordinary overlapping backups using a timestamp lock, considering locks older than ten minutes stale. | Partial — non-atomic lock; manual action overrides it |
+| P-FR-10 | Prevent ordinary overlapping backups using a timestamp lock, considering locks older than ten minutes stale. | Partial — non-atomic lock; normal admin backup no longer forcibly overrides it; explicit reset action remains |
 | P-FR-11 | Process upload batches, default five files, using Action Scheduler or WP-Cron. | Implemented — queue manager |
 | P-FR-12 | Upload files below 4 MiB directly; use 3,276,800-byte chunks for larger files. | Implemented — storage |
 | P-FR-13 | Retry chunk network/throttle failures and retry whole-file attempts, marking permanent failure. | Partial — some early errors bypass retries |
@@ -96,6 +98,10 @@ Namespaces use capitalized components (`SPSync\Database`, `SPSync\Api`, etc.), w
 | P-FR-26 | Accept a plugin backup folder or its individual component files without SharePoint credentials; stage privately and verify manifest, lengths, hashes and archive paths before review. | Implemented — LocalBackup and Manual Restore tab |
 | P-FR-27 | Require an administrator nonce and explicit overwrite confirmation before queuing local restoration; restore only supplied components and display status/errors. | Implemented — admin handlers and ManualRestore |
 | P-FR-28 | Snapshot the actual overwritten local-restore files and optional database; on handled failure restore the snapshot, remove newly introduced files and retain recovery artifacts. | Implemented best-effort recovery; interrupted/killed processes can require administrator intervention |
+| P-FR-29 | Let administrators select manual-device or automatic-SharePoint operation; manual selection clears the automatic schedule, while upgrades preserve existing schedules. | Implemented — method is represented by saved backup frequency; credentials and schedule save independently |
+| P-FR-30 | Prepare a device backup in the background without cloud credentials, using the saved full/selected/database-only scope and without SharePoint queue insertion. | Implemented — DeviceBackup and device branch of BackupEngine |
+| P-FR-31 | Provide an administrator-capability/nonce/ownership-checked ZIP attachment containing the manifest and all selected components; require a user download action. | Implemented — authenticated streaming download; browser controls final save location |
+| P-FR-32 | Expire download access after 24 hours, schedule private-copy deletion and allow owner cancellation/removal; preserve downloaded device files. | Implemented — cron cleanup can be delayed when cron is not running |
 
 ## 5. Backup operation in detail
 
@@ -107,6 +113,7 @@ flowchart TD
     Scan --> ZIP[Create independent ZIP parts]
     ZIP --> Manifest[Compute hashes and write manifest]
     Manifest --> Queue[(Upload item records)]
+    Manifest --> Device[Private ZIP for owner-initiated device download]
     Queue --> Worker[Background upload batches]
     Worker --> Cloud[Graph upload into backup folder]
     Cloud --> Cleanup[Local cleanup and remote retention]
@@ -200,7 +207,7 @@ Remote verification reads one Graph children response. It accepts any returned f
 
 Cloud site/drive/root IDs persist in settings. OAuth token uses a transient, cached for `max(60, expires_in - 300)` seconds. Individual remote backup-folder IDs use one-hour transients. Connection testing clears persistent discovery IDs before rediscovery.
 
-Client-secret encryption uses AES-256-CBC, random IV and a key derived from WordPress salts. The no-OpenSSL fallback is base64 encoding, which is not encryption. API keys are stored as plain settings values. The save handler writes the secret before writing the encryption flag, so changing that flag can make existing stored secret values unreadable or incorrectly interpreted.
+Client-secret encryption uses AES-256-CBC, random IV and a key derived from WordPress salts. The no-OpenSSL fallback is base64 encoding, which is not encryption. API keys are stored as plain settings values. The 1.2.0 credential handler reads the current secret before changing the encryption flag and then stores it under the selected mode, avoiding the original flag-change ordering defect.
 
 ## 9. Scheduling and retention
 
@@ -208,7 +215,7 @@ Client-secret encryption uses AES-256-CBC, random IV and a key derived from Word
 - Monthly calculates an initial selected day clamped to 1–28, then repeats every 30 days. This can drift from the selected calendar date.
 - One-time invalid/past date falls back to one hour from now rather than rejecting it.
 - After the scheduled hook, `once` is reset to manual even if backup generation fails.
-- Manual admin backup deletes the lock and invokes the engine with force override.
+- Normal admin backup respects the running-job lock; the explicit reset-lock action remains available for stale locks.
 - Deactivation does not clear backup/upload/restore/log cleanup hooks.
 - Retention defaults to 30; a nonpositive limit skips pruning. Matching `spsync-backup-` folders are sorted by name, oldest first. Only one listing page is inspected.
 - Retention deletes corresponding queue rows without checking whether the remote DELETE succeeded, potentially losing local tracking for a still-present backup.
@@ -229,7 +236,7 @@ WP-Cron timing depends on an external cron driver or site traffic. No exact exec
 | P-NFR-08 | Constrain all filesystem writes/extraction to intended destinations. | Local upload filenames/private staging and ZIP entries validated; remote manifest filename handling remains a gap |
 | P-NFR-09 | Enforce retention over the complete remote inventory and only after confirmed deletion. | Required gap — pagination and delete-result handling |
 | P-NFR-10 | Bound memory and work on large sites. | Partial — row/chunk batching exists, but scanning, migration and some archive work hold full collections |
-| P-NFR-11 | Provide repeatable backup/restore integration tests. | 65 isolated regression checks and three real multipart upload cases passed; full WordPress/SharePoint integration remains pending |
+| P-NFR-11 | Provide repeatable backup/restore integration tests. | 91 isolated regression checks, three prior multipart-upload cases, and three current HTTP-download cases passed; live WordPress/SharePoint integration remains pending |
 
 No backup encryption-at-rest feature for SQL/ZIP artifacts, incremental backups, verified point-in-time database consistency, multisite-wide orchestration, or measured RTO/RPO is implemented or established by the inspected source.
 
@@ -262,5 +269,19 @@ Verification requires each declared component exactly once, matching size/SHA-25
 `spsync_manual_restore` executes the local operation in one background invocation, retaining loaded restore code even if the plugin files themselves are replaced. It snapshots existing destination files and optional database, then restores ZIPs and all SQL batches. A worker-specific option prevents duplicate execution; active status blocks new backup/restore starts, although a completely atomic lock across all older entry points is not established. Local worker status uses the existing plugin settings; legacy remote worker events ignore local job IDs.
 
 On handled failure, newly introduced files are removed and the snapshot is reapplied; recovery files remain private and their location is shown to administrators. Successful restoration flushes cache and removes staging/recovery files. A fatal interruption attempts to mark failure and retain artifacts; a killed server process can bypass PHP shutdown handling. Local restoration is not a transaction and does not automatically remove unrelated preexisting files or guarantee recovery from catastrophic resource/server failure.
+
+## 13. Manual-device versus automatic-cloud choice added in 1.2.0
+
+The Backup Method & Schedule tab has manual-device and automatic-SharePoint choices. Manual is the new-installation default through the existing `backup_frequency=manual` setting. Selecting manual clears the recurring WordPress event; choosing automatic stores and schedules daily/weekly/monthly/one-time settings. Existing installations keep their frequency during upgrade. Credential saving is isolated from schedule saving.
+
+The Manual Backup & Download tab queues `spsync_create_device_backup` for the requesting administrator. The engine writes artifacts to a private `spsync-download-UUID/artifacts` directory, not public uploads, and bypasses SharePoint queue creation. Packaging creates a single ZIP containing a backup-ID folder with its manifest and all declared parts. Download does not require cloud configuration or alter the saved automatic schedule.
+
+Job state is stored in non-autoloaded WordPress options (`spsync_device_job_UUID`), with owner, directory, queued/running/ready/failed status, error, expiry, and ready-package filename/size. User metadata points to the user's latest job. A per-job lock prevents duplicate workers or cancellation during active work. A replacement request removes the user's previous completed server copy; a queued job can be cancelled. An interrupted worker attempts to record failure, while hard process termination can leave a stale job until expiry.
+
+The authenticated `admin_post_spsync_download_backup` action requires `manage_options`, a job-specific nonce, matching owner, unexpired ready state, validated private directory and safe package filename. It streams `application/zip` as an attachment in chunks. The browser controls the save location and a user must click Download; unattended writes to a device with a closed browser are not supported. Downloaded backups are unencrypted, like the existing backup artifacts.
+
+Access expires 24 hours after the request. `spsync_expire_device_backup` schedules private-copy cleanup; cleanup timing depends on cron and filesystem access, and may wait for active work. Only server files are affected. Creating artifacts plus the combined ZIP requires sufficient temporary disk space. Existing PHP/server execution, archive-library and filesystem limits still apply.
+
+Acceptance checks added for 1.2.0 cover manual/automatic selection and schedule persistence, private cloud-independent creation, absence of SharePoint queue activity, owner/nonce restrictions, download readiness/expiry, cancellation, cleanup, package completeness and manual-restore compatibility. The regression harness passes 91 checks. Three HTTP cases verify exact ZIP response bytes/attachment headers and reject another user and an invalid nonce. These are isolated fixtures, not a live WordPress production deployment.
 
 Open decisions: supported server/filesystem platforms, backup exclusion policy, per-site cloud isolation, full versus selective rollback coverage, lock/job identity design, trusted artifact format, and recovery targets.

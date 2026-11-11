@@ -1,6 +1,8 @@
 <?php
 namespace SPSync\Restore;
 
+use SPSync\Helpers\PrivateStorage;
+
 if (!defined('ABSPATH')) {
     exit;
 }
@@ -13,14 +15,9 @@ class LocalBackup
         if (empty($files['name']) || !is_array($files['name'])) {
             return new \WP_Error('no_backup', 'Choose a backup folder or its manifest and all backup parts.');
         }
-        $parent = realpath(apply_filters('spsync_restore_temp_dir', sys_get_temp_dir()));
-        if (!$parent || !is_writable($parent) || self::inside($parent, ABSPATH) ||
-            (!empty($_SERVER['DOCUMENT_ROOT']) && self::inside($parent, $_SERVER['DOCUMENT_ROOT']))) {
-            return new \WP_Error('private_storage', 'A writable temporary directory outside the website is required for manual restoration.');
-        }
-        $directory = $parent . '/spsync-import-' . wp_generate_uuid4();
-        if (!mkdir($directory, 0700)) {
-            return new \WP_Error('staging_failed', 'Could not create a private upload directory.');
+        $directory = PrivateStorage::create('import');
+        if (is_wp_error($directory)) {
+            return $directory;
         }
         $seen = [];
         foreach ($files['name'] as $index => $name) {
@@ -102,39 +99,11 @@ class LocalBackup
 
     public static function is_staging_directory($directory)
     {
-        if (!is_string($directory) || !preg_match('/\Aspsync-import-[a-f0-9-]{36}\z/D', basename($directory)) || is_link($directory)) {
-            return false;
-        }
-        $parent = realpath(apply_filters('spsync_restore_temp_dir', sys_get_temp_dir()));
-        $resolved = realpath($directory);
-        return $parent && $resolved && dirname($resolved) === $parent && !self::inside($resolved, ABSPATH) &&
-            (empty($_SERVER['DOCUMENT_ROOT']) || !self::inside($resolved, $_SERVER['DOCUMENT_ROOT']));
+        return PrivateStorage::valid($directory, 'import');
     }
 
     public static function remove($directory)
     {
-        if (!self::is_staging_directory($directory)) {
-            return;
-        }
-        $iterator = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($directory, \FilesystemIterator::SKIP_DOTS), \RecursiveIteratorIterator::CHILD_FIRST);
-        foreach ($iterator as $entry) {
-            if ($entry->isDir() && !$entry->isLink()) {
-                @rmdir($entry->getPathname());
-            } else {
-                @unlink($entry->getPathname());
-            }
-        }
-        @rmdir($directory);
-    }
-
-    private static function inside($path, $root)
-    {
-        $root = realpath($root);
-        if (!$root) {
-            return false;
-        }
-        $path = strtolower(str_replace('\\', '/', $path));
-        $root = rtrim(strtolower(str_replace('\\', '/', $root)), '/');
-        return $path === $root || strpos($path . '/', $root . '/') === 0;
+        PrivateStorage::remove($directory, 'import');
     }
 }

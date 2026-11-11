@@ -15,9 +15,14 @@ class BackupEngine
      *
      * @return string|false Backup ID on success, or false on failure.
      */
-    public static function run($force_override = false)
+    public static function run($force_override = false, $destination = 'sharepoint', $private_directory = null)
     {
         global $wp_version, $wpdb;
+
+        if (!in_array($destination, ['sharepoint', 'device'], true) ||
+            ($destination === 'device' && !\SPSync\Helpers\PrivateStorage::valid($private_directory, 'download'))) {
+            return false;
+        }
 
         if (get_option('spsync_restore_start_lock') || in_array(Settings::get('restore_status'), ['downloading', 'extracting', 'restoring_database', 'cleanup'], true)) {
             Logger::warning('Backup aborted: a restoration is in progress.');
@@ -60,7 +65,7 @@ class BackupEngine
 
         // Define local storage paths within WordPress upload folder
         $upload_dir = wp_upload_dir();
-        $base_dir = rtrim($upload_dir['basedir'], '/') . '/spsync-backups/' . $backup_id;
+        $base_dir = $destination === 'device' ? $private_directory . '/artifacts' : rtrim($upload_dir['basedir'], '/') . '/spsync-backups/' . $backup_id;
         
         // 1. Create and secure directories
         if (!file_exists($base_dir)) {
@@ -139,6 +144,12 @@ class BackupEngine
             Logger::error('Backup Failed: Could not write manifest.json file.');
             Settings::delete('backup_running');
             return false;
+        }
+
+        if ($destination === 'device') {
+            Settings::delete('backup_running');
+            Logger::info('Backup created in private storage for device download.', ['backup_id' => $backup_id]);
+            return $backup_id;
         }
 
         // Compute manifest metrics
