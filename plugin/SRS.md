@@ -1,6 +1,6 @@
 # Software Requirements Specification — WordPress SharePoint Backup Plugin
 
-Document version: 1.2.1  
+Document version: 1.3.0
 Review date: 11 November 2026  
 Scope: `plugin/` source; packaged ZIP assessed separately  
 Basis: the original source plus the 1.1.0 selection/restoration and 1.2.0 manual-device/automatic-cloud workflows and regression harness. This document includes the implementation changes made on 11 November 2026.
@@ -17,7 +17,7 @@ The Laravel dashboard in `../dashboard/` and the Python SEO backend are remote b
 
 | Item | Declared or observed requirement |
 |---|---|
-| Plugin identity | WordPress SharePoint Backup Plugin; `SPSYNC_VERSION` 1.2.1 |
+| Plugin identity | WordPress SharePoint Backup Plugin; `SPSYNC_VERSION` 1.3.0 |
 | Declared compatibility | PHP 7.4+, WordPress 6.0+ in entry header; not fully compatibility-tested |
 | Database | WordPress `$wpdb` with MySQL-style SQL |
 | Archive support | ZipArchive preferred; WordPress PclZip fallback |
@@ -56,11 +56,11 @@ Microsoft application permissions and tenant consent must be provisioned externa
 | `restore/RestoreManager.php` | Restore queue and phase transitions |
 | `restore/DownloadManager.php` | Stream remote files to disk and check expected SHA-256 |
 | `restore/RestoreEngine.php` | ZIP extraction, batched SQL execution and rollback snapshot |
-| `restore/LocalBackup.php` | Private folder upload staging, manifest/part integrity verification and safe cleanup |
-| `restore/ManualRestore.php` | Confirmed background local restoration, actual-destination recovery snapshot and rollback |
+| `restore/LocalBackup.php` | Private ZIP/folder/file staging, safe outer-package extraction, manifest/part verification and cleanup |
+| `restore/ManualRestore.php` | Immediate after-response restoration, durable scheduled fallback, destination snapshot and rollback |
 | `tests/run.php` | Isolated regression harness using temporary sites and WordPress/database stubs |
 | `README.md` | Installation, backup-selection and manual-restoration instructions |
-| `schedule_backup_plugin.zip` | Rebuilt 1.2.1 installable package; includes application PHP and README, excludes tests/SRS |
+| `schedule_backup_plugin.zip` | Rebuilt 1.3.0 installable package; includes application PHP and README, excludes tests/SRS |
 
 ### Bootstrap detail that affects deployment
 
@@ -95,8 +95,8 @@ Namespaces use capitalized components (`SPSync\Database`, `SPSync\Api`, etc.), w
 | P-FR-23 | Preserve custom data on deactivation. | Implemented — empty deactivation hook; no uninstall implementation supplied |
 | P-FR-24 | Offer a Backup Contents tab with entire website/database selected by default; allow plugins, themes, uploads and other discovered wp-content directories. | Implemented — selection class, scanner and admin tab |
 | P-FR-25 | Allow an optional database in selected mode, including database-only backups; reject empty/invalid selections and apply saved scope to every backup entry point. | Implemented — selection validation and shared backup engine |
-| P-FR-26 | Accept a plugin backup folder or its individual component files without SharePoint credentials; stage privately and verify manifest, lengths, hashes and archive paths before review. | Implemented — LocalBackup and Manual Restore tab |
-| P-FR-27 | Require an administrator nonce and explicit overwrite confirmation before queuing local restoration; restore only supplied components and display status/errors. | Implemented — admin handlers and ManualRestore |
+| P-FR-26 | Accept one plugin backup ZIP, folder or set of component files without SharePoint credentials; stage privately and verify layout, manifest, lengths, hashes and archive paths before restoration. | Implemented — LocalBackup and Manual Restore tab |
+| P-FR-27 | Require an administrator nonce and upfront overwrite confirmation; after successful upload verification, immediately dispatch restoration without a second Start action and display status/errors. | Implemented — response-shutdown dispatch with scheduled fallback |
 | P-FR-28 | Snapshot the actual overwritten local-restore files and optional database; on handled failure restore the snapshot, remove newly introduced files and retain recovery artifacts. | Implemented best-effort recovery; interrupted/killed processes can require administrator intervention |
 | P-FR-29 | Let administrators select manual-device or automatic-SharePoint operation; manual selection clears the automatic schedule, while upgrades preserve existing schedules. | Implemented — method is represented by saved backup frequency; credentials and schedule save independently |
 | P-FR-30 | Prepare a device backup in the background without cloud credentials, using the saved full/selected/database-only scope and without SharePoint queue insertion. | Implemented — DeviceBackup and device branch of BackupEngine |
@@ -236,7 +236,7 @@ WP-Cron timing depends on an external cron driver or site traffic. No exact exec
 | P-NFR-08 | Constrain all filesystem writes/extraction to intended destinations. | Local upload filenames/private staging and ZIP entries validated; remote manifest filename handling remains a gap |
 | P-NFR-09 | Enforce retention over the complete remote inventory and only after confirmed deletion. | Required gap — pagination and delete-result handling |
 | P-NFR-10 | Bound memory and work on large sites. | Partial — row/chunk batching exists, but scanning, migration and some archive work hold full collections |
-| P-NFR-11 | Provide repeatable backup/restore integration tests. | 105 isolated plugin checks plus prior multipart-upload/download cases passed; live WordPress/SharePoint integration remains pending |
+| P-NFR-11 | Provide repeatable backup/restore integration tests. | 132 isolated checks, 11 HTTP upload/restore cases and a PclZip fallback check passed; live WordPress/SharePoint integration remains pending |
 
 No backup encryption-at-rest feature for SQL/ZIP artifacts, incremental backups, verified point-in-time database consistency, multisite-wide orchestration, or measured RTO/RPO is implemented or established by the inspected source.
 
@@ -262,9 +262,9 @@ These tests use temporary fixtures and WordPress/database stubs. No production s
 
 ## 12. Manual restoration operation added in 1.1.0
 
-Administrators upload a directory using a browser directory picker or select its individual files together. Supported artifacts are `manifest.json`, `database.sql` and `backup_partN.zip`; a ZIP wrapping the whole backup folder and other plugins' formats are not supported. Files are stored in a randomly named `spsync-import-UUID` directory under the system temp location, required to be outside WordPress/document root. A deployment may override the parent with `spsync_restore_temp_dir`.
+Administrators upload a plugin backup ZIP, a directory using a browser picker, or its individual files together. Supported artifacts are `manifest.json`, `database.sql` and `backup_partN.zip`. As of 1.3.0, a ZIP may wrap a single plugin backup folder or contain its components directly; other plugins' formats remain unsupported. Files are stored in a randomly named `spsync-import-UUID` directory under the system temp location, required to be outside WordPress/document root. A deployment may override the parent with `spsync_restore_temp_dir`.
 
-Verification requires each declared component exactly once, matching size/SHA-256, and valid ZIP entries. The manifest is capped at 1 MiB; archive expansion defaults to 2 GiB per part, configurable using `spsync_restore_max_expanded_bytes`. PHP/server request and file-count limits remain applicable. The review tab shows included files/sizes and requires a checked overwrite confirmation before scheduling.
+Verification requires each declared component exactly once, matching size/SHA-256, and valid ZIP entries. The manifest is capped at 1 MiB; archive expansion defaults to 2 GiB, configurable using `spsync_restore_max_expanded_bytes`. The outer ZIP is checked against that same size limit and a 10,000-entry cap. PHP/server request and file-count limits remain applicable. The upload form requires a checked overwrite confirmation; verified new uploads proceed automatically. A retained upload is shown with a retry action if immediate start was blocked.
 
 `spsync_manual_restore` executes the local operation in one background invocation, retaining loaded restore code even if the plugin files themselves are replaced. It snapshots existing destination files and optional database, then restores ZIPs and all SQL batches. A worker-specific option prevents duplicate execution; active status blocks new backup/restore starts, although a completely atomic lock across all older entry points is not established. Local worker status uses the existing plugin settings; legacy remote worker events ignore local job IDs.
 
@@ -289,5 +289,15 @@ Acceptance checks added for 1.2.0 cover manual/automatic selection and schedule 
 The neighboring SEO backend now has a focused `/backup-dashboard` page and JWT-authenticated client-scoped backup APIs. It stores this plugin's API key encrypted, independently from SAC/publishing credentials; sends it in `X-SPSYNC-KEY`; triggers SharePoint backup/restore; polls status; verifies remote folders; and fetches logs/system information. A real site must be paired with its URL/key before use. See the backend's `BACKUP_API.md` for its contracts and operating limits.
 
 Plugin acceptance checks now total 105, including the stable API ID handoff, duplicate admission, pending monitoring, pre-upload worker failure, schedule failure, one-time schedule preservation, Graph pagination, and fail-safe listing errors. Plugin changes remain committed in the parent repository; the SEO backend remains outside Git tracking by user instruction.
+
+## 15. Direct ZIP upload and immediate restoration added in 1.3.0
+
+The normal administrator action is now Upload, Verify & Restore. The form accepts exactly one ZIP upload, one folder selection or one individual-file selection, with capability/nonce checks and explicit confirmation before receiving/processing the backup. On successful verification the handler starts the restore job, registers immediate response-shutdown dispatch, clears the pending-upload metadata and redirects to status. There is no second confirmation/start stage in the successful upload path.
+
+Outer ZIP verification rejects unsafe/special paths, multiple manifests, unrelated files or multiple backup roots. Only recognized manifest/SQL/part files are written to flat private staging paths. ZipArchive copies component streams with bounded writes; WordPress PclZip uses validated file selection and flattened extraction as fallback. The standard manifest, size, hash and inner-archive checks run before a worker can change the site. Uploaded outer archives are removed after extraction or with failed-import cleanup.
+
+Immediate dispatch runs the existing idempotent worker during WordPress shutdown, after finishing the response where FastCGI/LiteSpeed permits. Other servers may keep the upload response open while it runs. The scheduled action is retained for recovery if the immediate attempt cannot execute; this does not guarantee completion after a process/server crash. Existing busy checks, rollback and failure artifact retention still apply. Previously verified uploads retain Restore Verified Backup Now, and new verified uploads are retained for retry if a current job or scheduler failure prevents start.
+
+Validation: 132 regression checks passed. Eleven real multipart HTTP cases restored a disposable fixture site immediately from wrapped/flat ZIPs, a folder and individual files without running cron, and rejected corrupt, missing, unsafe, unconfirmed or unauthorized uploads without changing site files. A separate run without ZipArchive verified PclZip extraction/checksums. No production website was restored as part of these checks.
 
 Open decisions: supported server/filesystem platforms, backup exclusion policy, per-site cloud isolation, full versus selective rollback coverage, lock/job identity design, trusted artifact format, and recovery targets.

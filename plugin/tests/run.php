@@ -60,6 +60,8 @@ namespace {
     $nonce_allowed = true;
     $metadata = [];
     $schedule_fail = false;
+    $actions = [];
+    $filter_values = [];
 
     class WP_Error
     {
@@ -92,11 +94,11 @@ namespace {
     $wpdb = new TestDatabase();
 
     function is_wp_error($value) { return $value instanceof WP_Error; }
-    function add_action() {}
+    function add_action($hook, $callback, $priority = 10, $accepted_args = 1) { global $actions; $actions[$hook][] = $callback; return true; }
     function register_activation_hook() {}
     function register_deactivation_hook() {}
     function plugin_dir_path($path) { return dirname($path) . '/'; }
-    function apply_filters($name, $value) { return $value; }
+    function apply_filters($name, $value) { global $filter_values; return $filter_values[$name] ?? $value; }
     function wp_json_encode($value, $flags = 0) { return json_encode($value, $flags); }
     function wp_generate_uuid4() {
         $hex = bin2hex(random_bytes(16));
@@ -467,6 +469,80 @@ namespace {
         verify(count($verified['remote_backups']) === 2, 'Remote verification follows Graph listing pages.');
         \SPSync\Auth\GraphClient::$responses = [['value' => [], '@odata.nextLink' => 'https://untrusted.example/next-page']];
         verify(is_wp_error($controller->verify_remote_backups(null)), 'Do not follow Graph pagination to another host.');
+
+        $source = staging(['wp-content/uploads/zip-restored.txt' => 'ZIP restoration fixture']);
+        $staging_directories[] = $source;
+        $manifest_text = file_get_contents($source . '/manifest.json');
+        $part_bytes = file_get_contents($source . '/backup_part001.zip');
+        $outer = $fixture . '/uploaded-package.zip';
+        foreach (['', 'spsync-backup-folder/', 'downloads/spsync-backups/one-backup/'] as $prefix) {
+            archive($outer, [$prefix . 'manifest.json' => $manifest_text, $prefix . 'backup_part001.zip' => $part_bytes]);
+            $import = PrivateStorage::create('import');
+            $staging_directories[] = $import;
+            $verified = LocalBackup::unpack_archive($outer, $import);
+            verify(!is_wp_error($verified), 'Accept a flat or nested single-backup ZIP: ' . $prefix);
+            verify(file_get_contents($import . '/backup_part001.zip') === $part_bytes, 'Outer ZIP extraction preserves the original part bytes.');
+        }
+        $invalid_packages = [
+            ['one/manifest.json' => $manifest_text, 'two/manifest.json' => $manifest_text],
+            ['backup_part001.zip' => $part_bytes],
+            ['manifest.json' => $manifest_text],
+            ['manifest.json' => $manifest_text, 'backup_part001.zip' => 'corrupt'],
+            ['manifest.json' => $manifest_text, 'backup_part001.zip' => $part_bytes, 'shell.php' => '<?php unsafe'],
+            ['manifest.json' => $manifest_text, '../escape.php' => 'unsafe'],
+            ['manifest.json' => str_repeat('x', 1048577)],
+            ['one/manifest.json' => $manifest_text, 'elsewhere/backup_part001.zip' => $part_bytes],
+        ];
+        foreach ($invalid_packages as $package) {
+            archive($outer, $package);
+            $import = PrivateStorage::create('import');
+            $staging_directories[] = $import;
+            verify(is_wp_error(LocalBackup::unpack_archive($outer, $import)), 'Reject missing/corrupt/multiple/unsafe backup packages.');
+        }
+        archive($outer, ['manifest.json' => $manifest_text, 'backup_part001.zip' => $part_bytes]);
+        $import = PrivateStorage::create('import');
+        $staging_directories[] = $import;
+        $filter_values['spsync_restore_max_expanded_bytes'] = 20;
+        verify(is_wp_error(LocalBackup::unpack_archive($outer, $import)), 'Enforce expanded-size limit on the uploaded outer ZIP.');
+        unset($filter_values['spsync_restore_max_expanded_bytes']);
+        verify(is_wp_error(LocalBackup::upload_zip(['name' => 'backup.zip', 'error' => UPLOAD_ERR_OK, 'tmp_name' => $outer])), 'ZIP upload must originate from an actual HTTP upload.');
+        verify(is_wp_error(LocalBackup::unpack_archive($outer, $fixture)), 'Do not unpack to an arbitrary directory.');
+
+        $automatic = staging(['wp-content/uploads/automatically-restored.txt' => 'Started without cron']);
+        $staging_directories[] = $automatic;
+        $id = ManualRestore::start($automatic);
+        ManualRestore::dispatch_after_response($id);
+        verify(!file_exists(ABSPATH . 'wp-content/uploads/automatically-restored.txt'), 'Register dispatch before applying the restore.');
+        $dispatch = end($actions['shutdown']);
+        $dispatch();
+        verify(file_get_contents(ABSPATH . 'wp-content/uploads/automatically-restored.txt') === 'Started without cron', 'Response-shutdown dispatch restores files without a cron visit.');
+        verify(Settings::get('restore_status') === 'completed' && !file_exists($automatic), 'Immediate restore reaches completion and cleans staging.');
+
+        $nonce_allowed = true;
+        $current_user_allowed = true;
+        $_POST = [];
+        $_FILES = [];
+        $before_dispatch = count($actions['shutdown']);
+        try { \SPSync\Admin\SettingsPage::handle_upload_backup(); verify(false, 'Unconfirmed upload was allowed.'); }
+        catch (\RuntimeException $error) { verify(strpos($error->getMessage(), 'Confirm') !== false, 'Require overwrite confirmation on the initial upload form.'); }
+        verify(count($actions['shutdown']) === $before_dispatch, 'Missing confirmation never schedules immediate restoration.');
+        $_POST = ['confirm_restore' => '1'];
+        $_FILES = ['backup_zip' => ['name' => 'backup.zip'], 'backup_folder' => ['name' => ['manifest.json']]];
+        try { \SPSync\Admin\SettingsPage::handle_upload_backup(); verify(false, 'Mixed upload sources were allowed.'); }
+        catch (\RuntimeException $error) { verify(strpos($error->getMessage(), 'one+backup+ZIP') !== false, 'Require exactly one upload source.'); }
+        $_FILES = [];
+        $automatic = staging(['wp-content/uploads/retry-restored.txt' => 'Previously uploaded backup']);
+        $staging_directories[] = $automatic;
+        update_user_meta(1, 'spsync_pending_import', $automatic);
+        try { \SPSync\Admin\SettingsPage::handle_restore_uploaded(); verify(false, 'Expected restoration redirect.'); }
+        catch (\RuntimeException $error) { verify(strpos($error->getMessage(), 'starting+now') !== false, 'Previously verified upload can be restored immediately without reuploading.'); }
+        $dispatch = end($actions['shutdown']); $dispatch();
+        verify(file_get_contents(ABSPATH . 'wp-content/uploads/retry-restored.txt') === 'Previously uploaded backup', 'Retry action dispatches the retained verified backup.');
+        $_POST = [];
+        $_GET = ['tab' => 'restore'];
+        ob_start(); \SPSync\Admin\SettingsPage::render_settings_page(); $html = ob_get_clean();
+        verify(strpos($html, 'name="backup_zip"') !== false && strpos($html, 'Upload, Verify &amp; Restore') !== false, 'Manual Restore offers ZIP input and a single upload/verify/restore button.');
+        verify(strpos($html, 'name="confirm_restore" value="1" required') !== false, 'Initial form includes a required overwrite confirmation.');
         echo "PASS: $checks regression checks\n";
     } finally {
         foreach ($device_directories as $path) { PrivateStorage::remove($path, 'download'); }

@@ -10,6 +10,121 @@ if (!defined('ABSPATH')) {
 /** Import a plugin backup folder without placing uploaded SQL/archives on the web. */
 class LocalBackup
 {
+    public static function upload_zip($file)
+    {
+        if (!is_array($file) || !isset($file['name'], $file['error'], $file['tmp_name']) ||
+            !is_string($file['name']) || !preg_match('/\.zip\z/iD', $file['name']) || $file['error'] !== UPLOAD_ERR_OK ||
+            !is_string($file['tmp_name']) || !is_uploaded_file($file['tmp_name'])) {
+            return new \WP_Error('invalid_zip_upload', 'Choose a complete backup ZIP file. Check the server upload limit if the upload was interrupted.');
+        }
+        $directory = PrivateStorage::create('import');
+        if (is_wp_error($directory)) {
+            return $directory;
+        }
+        $archive = $directory . '/.uploaded-backup.zip';
+        if (!move_uploaded_file($file['tmp_name'], $archive)) {
+            self::remove($directory);
+            return new \WP_Error('zip_upload_failed', 'Could not safely receive the backup ZIP.');
+        }
+        @chmod($archive, 0600);
+        $manifest = self::unpack_archive($archive, $directory);
+        @unlink($archive);
+        if (is_wp_error($manifest)) {
+            self::remove($directory);
+            return $manifest;
+        }
+        return ['directory' => $directory, 'manifest' => $manifest];
+    }
+
+    /** Accept a flat package or one backup folder, never an arbitrary website ZIP. */
+    public static function unpack_archive($archive, $directory)
+    {
+        if (!self::is_staging_directory($directory)) {
+            return new \WP_Error('invalid_staging', 'Invalid private backup staging directory.');
+        }
+        $entries = RestoreEngine::archive_entries($archive, null);
+        if (is_wp_error($entries)) {
+            return $entries;
+        }
+        if (count($entries) > 10000) {
+            return new \WP_Error('zip_entries', 'The backup package contains too many entries.');
+        }
+        $manifest_roots = [];
+        foreach ($entries as $entry) {
+            $name = str_replace('\\', '/', $entry['filename']);
+            if (basename($name) === 'manifest.json' && substr($name, -1) !== '/') {
+                $manifest_roots[] = dirname($name);
+            }
+        }
+        if (count($manifest_roots) !== 1) {
+            return new \WP_Error('zip_manifest', 'Choose a ZIP containing exactly one plugin backup folder with manifest.json and all its parts.');
+        }
+        $root = $manifest_roots[0];
+        $parts = [];
+        foreach ($entries as $entry) {
+            $name = str_replace('\\', '/', $entry['filename']);
+            if (substr($name, -1) === '/') {
+                continue;
+            }
+            if (dirname($name) !== $root) {
+                return new \WP_Error('zip_layout', 'The ZIP must contain one backup folder, not multiple backups or website files.');
+            }
+            $filename = basename($name);
+            if (in_array($filename, ['.htaccess', 'index.php', 'web.config'], true)) {
+                continue;
+            }
+            if (!self::allowed_filename($filename) || file_exists($directory . '/' . $filename)) {
+                return new \WP_Error('zip_layout', 'The ZIP contains an unexpected or duplicate backup component.');
+            }
+            if ($filename === 'manifest.json' && $entry['size'] > 1048576) {
+                return new \WP_Error('invalid_manifest', 'The backup manifest exceeds the 1 MB limit.');
+            }
+            $parts[] = $entry;
+        }
+        if (class_exists('\\ZipArchive')) {
+            $zip = new \ZipArchive();
+            if ($zip->open($archive) !== true) {
+                return new \WP_Error('invalid_zip', 'The backup ZIP cannot be opened.');
+            }
+            try {
+                foreach ($parts as $part) {
+                    $source = $zip->getStream($part['filename']);
+                    if (!$source) {
+                        return new \WP_Error('zip_read', 'A ZIP component cannot be read. Encrypted ZIP packages are not supported.');
+                    }
+                    $destination = $directory . '/' . basename(str_replace('\\', '/', $part['filename']));
+                    $target = fopen($destination, 'xb');
+                    if (!$target) {
+                        fclose($source);
+                        return new \WP_Error('zip_write', 'Could not create a private backup component.');
+                    }
+                    // Bound writes even if a corrupted ZIP lies about expanded size.
+                    $copied = stream_copy_to_stream($source, $target, (int) $part['size'] + 1);
+                    fclose($source);
+                    fclose($target);
+                    @chmod($destination, 0600);
+                    if ($copied !== (int) $part['size']) {
+                        return new \WP_Error('zip_write', 'A ZIP component was truncated or could not be written completely.');
+                    }
+                }
+            } finally {
+                $zip->close();
+            }
+        } else {
+            $zip = new \PclZip($archive); // archive_entries() loaded WordPress's fallback.
+            $list = $zip->extract(PCLZIP_OPT_PATH, $directory, PCLZIP_OPT_REMOVE_ALL_PATH, PCLZIP_OPT_BY_NAME, array_column($parts, 'filename'), PCLZIP_OPT_SET_CHMOD, 0600, PCLZIP_OPT_STOP_ON_ERROR);
+            if (!is_array($list) || count($list) !== count($parts)) {
+                return new \WP_Error('zip_extract', 'Could not extract every backup component.');
+            }
+            foreach ($list as $part) {
+                if ($part['status'] !== 'ok') {
+                    return new \WP_Error('zip_extract', 'A backup component could not be extracted.');
+                }
+            }
+        }
+        return self::validate($directory);
+    }
+
     public static function upload($files)
     {
         if (empty($files['name']) || !is_array($files['name'])) {

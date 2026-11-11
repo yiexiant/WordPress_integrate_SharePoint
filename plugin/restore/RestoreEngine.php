@@ -13,13 +13,17 @@ if (!defined('ABSPATH')) {
 class RestoreEngine
 {
     /** Validate paths, symlinks and expanded size before an archive can write files. */
-    public static function archive_entries($zip_file)
+    public static function archive_entries($zip_file, $destination_root = ABSPATH)
     {
         $entries = [];
         if (class_exists('\\ZipArchive')) {
             $zip = new \ZipArchive();
             if ($zip->open($zip_file) !== true) {
                 return new \WP_Error('invalid_zip', 'A backup ZIP part cannot be opened.');
+            }
+            if ($destination_root === null && $zip->numFiles > 10000) {
+                $zip->close();
+                return new \WP_Error('zip_entries', 'The backup package contains too many entries.');
             }
             for ($i = 0; $i < $zip->numFiles; $i++) {
                 $stat = $zip->statIndex($i);
@@ -56,17 +60,19 @@ class RestoreEngine
             $name = str_replace('\\', '/', $entry['filename']);
             $segments = explode('/', rtrim($name, '/'));
             if (!$name || preg_match('/[\x00-\x1f\x7f:]/', $name) || $name[0] === '/' ||
-                array_intersect($segments, ['..', '.', '', 'spsync-backups']) || isset($seen[strtolower($name)])) {
+                array_intersect($segments, $destination_root === null ? ['..', '.', ''] : ['..', '.', '', 'spsync-backups']) || isset($seen[strtolower($name)])) {
                 return new \WP_Error('unsafe_zip', 'A backup ZIP contains an unsafe or duplicate file path.');
             }
             $seen[strtolower($name)] = true;
-            $target = rtrim(ABSPATH, '/\\');
+            $target = $destination_root === null ? null : rtrim($destination_root, '/\\');
             foreach ($segments as $segment) {
                 if (preg_match('/[. ]\z|\A(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|\z)/i', $segment)) {
                     return new \WP_Error('unsafe_zip', 'A backup ZIP contains a path that cannot be restored safely on supported servers.');
                 }
-                $target .= '/' . $segment;
-                if (is_link($target)) {
+                if ($target !== null) {
+                    $target .= '/' . $segment;
+                }
+                if ($target !== null && is_link($target)) {
                     return new \WP_Error('unsafe_zip', 'A restore destination contains a symbolic link.');
                 }
             }

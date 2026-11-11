@@ -61,12 +61,16 @@ class SettingsPage
     public static function handle_upload_backup()
     {
         self::authorize('spsync_upload_backup');
+        if (empty($_POST['confirm_restore'])) {
+            self::redirect_notice('restore', false, 'Confirm that you want to overwrite the website before uploading and restoring the backup.');
+        }
         $folder = !empty($_FILES['backup_folder']['name'][0]);
         $files = !empty($_FILES['backup_files']['name'][0]);
-        if ($folder && $files) {
-            self::redirect_notice('restore', false, 'Choose either a backup folder or individual backup files, not both.');
+        $zip = !empty($_FILES['backup_zip']['name']);
+        if ((int) $folder + (int) $files + (int) $zip !== 1) {
+            self::redirect_notice('restore', false, 'Choose one backup ZIP, a backup folder, or its individual files. Use only one upload option.');
         }
-        $result = \SPSync\Restore\LocalBackup::upload($folder ? $_FILES['backup_folder'] : ($_FILES['backup_files'] ?? []));
+        $result = $zip ? \SPSync\Restore\LocalBackup::upload_zip($_FILES['backup_zip']) : \SPSync\Restore\LocalBackup::upload($folder ? $_FILES['backup_folder'] : $_FILES['backup_files']);
         if (is_wp_error($result)) {
             self::redirect_notice('restore', false, $result->get_error_message());
         }
@@ -75,7 +79,13 @@ class SettingsPage
             \SPSync\Restore\LocalBackup::remove($old);
         }
         update_user_meta(get_current_user_id(), 'spsync_pending_import', $result['directory']);
-        self::redirect_notice('restore', true, 'Backup uploaded and verified. Review its contents below before starting restoration.');
+        $started = \SPSync\Restore\ManualRestore::start($result['directory']);
+        if (is_wp_error($started)) {
+            self::redirect_notice('restore', false, 'Backup verified, but restoration could not start: ' . $started->get_error_message() . ' The verified upload is retained below so you can retry without uploading again.');
+        }
+        delete_user_meta(get_current_user_id(), 'spsync_pending_import');
+        \SPSync\Restore\ManualRestore::dispatch_after_response($started);
+        self::redirect_notice('restore', true, 'Backup verified. Restoration is starting automatically; no second confirmation is needed. Refresh this page for status.');
     }
 
     public static function handle_restore_uploaded()
@@ -88,8 +98,9 @@ class SettingsPage
         $result = \SPSync\Restore\ManualRestore::start($directory);
         if (!is_wp_error($result)) {
             delete_user_meta(get_current_user_id(), 'spsync_pending_import');
+            \SPSync\Restore\ManualRestore::dispatch_after_response($result);
         }
-        self::redirect_notice('restore', !is_wp_error($result), is_wp_error($result) ? $result->get_error_message() : 'Restoration queued. WordPress will create a recovery snapshot and restore the uploaded backup in the background. Refresh this page for progress.');
+        self::redirect_notice('restore', !is_wp_error($result), is_wp_error($result) ? $result->get_error_message() : 'Restoration is starting now. WordPress will create a recovery snapshot and restore the verified backup. Refresh this page for progress.');
     }
 
     public static function handle_discard_upload()
@@ -659,21 +670,40 @@ class SettingsPage
                 $restore_status = Settings::get('restore_status', 'idle');
                 ?>
                 <div class="spsync-card" style="margin-bottom: 24px;">
-                    <h3 class="spsync-card-title">Restore an uploaded backup folder</h3>
-                    <p>No SharePoint connection is needed. Choose a folder created by this plugin, containing <code>manifest.json</code>, all <code>backup_part*.zip</code> files, and <code>database.sql</code> if the backup includes a database.</p>
-                    <p>A ZIP of the whole folder or a backup from another plugin is not supported. Select the folder itself, or select its individual files together.</p>
-                    <form method="post" enctype="multipart/form-data" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                    <h3 class="spsync-card-title">Upload and restore a backup</h3>
+                    <p>No SharePoint connection is needed. Upload the ZIP downloaded by this plugin, a ZIP containing one plugin backup folder, or choose the folder/files directly.</p>
+                    <p>The plugin verifies <code>manifest.json</code>, all ZIP parts and <code>database.sql</code> (if included), then immediately starts restoration. There is no second Start button after a successful upload. Backups from other plugins are not supported.</p>
+                    <form id="spsync-upload-restore-form" method="post" enctype="multipart/form-data" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                         <input type="hidden" name="action" value="spsync_upload_backup" />
                         <?php wp_nonce_field('spsync_upload_backup'); ?>
-                        <p><label for="spsync-backup-folder"><strong>Choose backup folder</strong></label><br /><input id="spsync-backup-folder" type="file" name="backup_folder[]" webkitdirectory directory multiple /></p>
+                        <p><label for="spsync-backup-zip"><strong>Choose backup ZIP</strong></label><br /><input id="spsync-backup-zip" type="file" name="backup_zip" accept=".zip,application/zip" /></p>
+                        <p><label for="spsync-backup-folder"><strong>Or choose backup folder</strong></label><br /><input id="spsync-backup-folder" type="file" name="backup_folder[]" webkitdirectory directory multiple /></p>
                         <p><label for="spsync-backup-files"><strong>Or choose individual backup files</strong></label><br /><input id="spsync-backup-files" type="file" name="backup_files[]" accept=".json,.sql,.zip" multiple /></p>
                         <p class="description">Server limits: each file <?php echo esc_html(size_format(wp_max_upload_size())); ?>; total request <?php echo esc_html(ini_get('post_max_size')); ?>; up to <?php echo esc_html(ini_get('max_file_uploads')); ?> files. A missing or truncated part will fail verification.</p>
-                        <p><button type="submit" class="spsync-btn-primary">Upload and Verify Backup</button></p>
+                        <p><label><input type="checkbox" name="confirm_restore" value="1" required /> I confirm that restoration will overwrite the website files and database included in this backup.</label></p>
+                        <p id="spsync-upload-error" role="alert" style="display:none; color:#b91c1c;"></p>
+                        <p><button id="spsync-upload-restore-button" type="submit" class="spsync-btn-primary">Upload, Verify &amp; Restore</button></p>
                     </form>
+                    <script>
+                    document.getElementById('spsync-upload-restore-form').addEventListener('submit', function (event) {
+                        const count = ['spsync-backup-zip', 'spsync-backup-folder', 'spsync-backup-files'].filter(function (id) { return document.getElementById(id).files.length > 0; }).length;
+                        if (count !== 1) {
+                            event.preventDefault();
+                            const error = document.getElementById('spsync-upload-error');
+                            error.textContent = 'Choose one ZIP, a folder, or individual files. Use only one upload option.';
+                            error.style.display = '';
+                            return;
+                        }
+                        const button = document.getElementById('spsync-upload-restore-button');
+                        button.disabled = true;
+                        button.textContent = 'Uploading, verifying and starting restoration…';
+                    });
+                    </script>
                 </div>
                 <?php if ($pending && !is_wp_error($pending)) : ?>
                     <div class="spsync-card" style="margin-bottom: 24px;">
-                        <h3 class="spsync-card-title">Review verified backup</h3>
+                        <h3 class="spsync-card-title">Previously verified backup</h3>
+                        <p>This upload was retained from an earlier attempt. You can restore it now without uploading it again. New uploads start automatically after verification.</p>
                         <p><strong>Backup:</strong> <?php echo esc_html($pending['backup_id']); ?></p>
                         <p><strong>Files to restore:</strong></p>
                         <ul style="list-style: disc; padding-left: 24px;">
@@ -686,7 +716,7 @@ class SettingsPage
                             <input type="hidden" name="action" value="spsync_restore_uploaded" />
                             <?php wp_nonce_field('spsync_restore_uploaded'); ?>
                             <p><label><input type="checkbox" name="confirm_restore" value="1" required /> I understand that restoration overwrites the included website files and database.</label></p>
-                            <button type="submit" class="spsync-btn-primary">Start Manual Restoration</button>
+                            <button type="submit" class="spsync-btn-primary">Restore Verified Backup Now</button>
                         </form>
                         <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-top: 12px;">
                             <input type="hidden" name="action" value="spsync_discard_upload" />
@@ -702,7 +732,7 @@ class SettingsPage
                     <p><strong><?php echo esc_html(ucwords(str_replace('_', ' ', $restore_status))); ?></strong></p>
                     <?php if (Settings::get('restore_error')) : ?><p><?php echo esc_html(Settings::get('restore_error')); ?></p><?php endif; ?>
                     <?php if ($restore_status === 'failed' && Settings::get('manual_restore_directory')) : ?><p>Private recovery location for your server administrator: <code><?php echo esc_html(Settings::get('manual_restore_directory')); ?></code></p><?php endif; ?>
-                    <p>Refresh this page for the latest status. Background work requires WordPress cron or Action Scheduler to run. Recovery files are retained if restoration fails.</p>
+                    <p>Restoration starts automatically after successful verification. Refresh this page for the latest status. WordPress cron or Action Scheduler is retained as a fallback. Recovery files are retained if restoration fails.</p>
                     <a class="spsync-btn-secondary" href="<?php echo esc_url(admin_url('admin.php?page=' . self::MENU_SLUG . '&tab=restore')); ?>">Refresh Status</a>
                 </div>
             <?php endif; ?>

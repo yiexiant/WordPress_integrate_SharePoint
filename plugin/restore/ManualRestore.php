@@ -31,7 +31,8 @@ class ManualRestore
 
     private static function queue($directory)
     {
-        if (Settings::get('backup_running') || in_array(Settings::get('restore_status'), ['downloading', 'extracting', 'restoring_database', 'cleanup'], true)) {
+        $pending = get_option('spsync_api_backup_request');
+        if (Settings::get('backup_running') || (is_array($pending) && $pending['created_at'] > time() - 600) || in_array(Settings::get('restore_status'), ['downloading', 'extracting', 'restoring_database', 'cleanup'], true)) {
             return new \WP_Error('busy', 'Wait for the current backup or restoration to finish.');
         }
         $manifest = LocalBackup::validate($directory);
@@ -55,6 +56,21 @@ class ManualRestore
         }
         Logger::info('Manual restore queued after administrator confirmation.', ['restore_job_id' => $id, 'backup_id' => $manifest['backup_id']]);
         return $id;
+    }
+
+    /** Start after the upload response; the scheduled action remains a fallback. */
+    public static function dispatch_after_response($id)
+    {
+        add_action('shutdown', function () use ($id) {
+            ignore_user_abort(true);
+            @set_time_limit(0);
+            if (function_exists('fastcgi_finish_request')) {
+                fastcgi_finish_request();
+            } elseif (function_exists('litespeed_finish_request')) {
+                litespeed_finish_request();
+            }
+            self::run($id);
+        }, 0);
     }
 
     /** One worker keeps the loaded restore code alive even if the plugin itself is restored. */
