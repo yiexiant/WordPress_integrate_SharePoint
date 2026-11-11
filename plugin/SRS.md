@@ -1,9 +1,9 @@
 # Software Requirements Specification — WordPress SharePoint Backup Plugin
 
-Document version: 1.0  
+Document version: 1.1  
 Review date: 11 November 2026  
 Scope: `plugin/` source; packaged ZIP assessed separately  
-Basis: all 21 source PHP files, including bootstrap, admin, REST, storage, backup, restore, scheduler, database, helpers and logging.
+Basis: the original 21 source PHP files plus the 1.1.0 backup-selection/local-restoration services and regression harness. This document includes the implementation changes made on 11 November 2026.
 
 ## 1. Purpose and status conventions
 
@@ -17,7 +17,7 @@ The Laravel dashboard in `../dashboard/` is an optional remote client. The Pytho
 
 | Item | Declared or observed requirement |
 |---|---|
-| Plugin identity | WordPress SharePoint Backup Plugin; `SPSYNC_VERSION` 1.0.0 |
+| Plugin identity | WordPress SharePoint Backup Plugin; `SPSYNC_VERSION` 1.1.0 |
 | Declared compatibility | PHP 7.4+, WordPress 6.0+ in entry header; not fully compatibility-tested |
 | Database | WordPress `$wpdb` with MySQL-style SQL |
 | Archive support | ZipArchive preferred; WordPress PclZip fallback |
@@ -34,7 +34,7 @@ Microsoft application permissions and tenant consent must be provisioned externa
 | Path | Responsibility |
 |---|---|
 | `schedule-backup-plugin.php` | Metadata, constants, namespace autoloading, activation and component hooks |
-| `admin/SettingsPage.php` | Four-tab settings/overview/log UI, configuration save, connection/manual-run/reset-lock actions |
+| `admin/SettingsPage.php` | Six-tab settings/overview/log UI, backup-selection settings, upload/review/restore actions and original diagnostics |
 | `api/RestController.php` | Shared-key authentication and nine remote endpoints |
 | `database/Installer.php` | Four custom tables and initial settings/API key |
 | `database/DatabaseMigrator.php` | URL matching, recursive serialization-aware replacement and cache flushing |
@@ -45,6 +45,7 @@ Microsoft application permissions and tenant consent must be provisioned externa
 | `backup/BackupEngine.php` | Local backup orchestration and upload queue creation |
 | `backup/DatabaseBackup.php` | SQL dump of prefix-matching tables |
 | `backup/FileScanner.php` | Installation traversal and exclusions |
+| `backup/BackupSelection.php` | Discover wp-content directories, validate/persist selected scope and optional database inclusion |
 | `backup/ZipBuilder.php` | Independent ZIP parts grouped by input size |
 | `backup/Retention.php` | Oldest matching remote folder pruning |
 | `queue/QueueManager.php` | Background batches and upload completion cleanup |
@@ -53,11 +54,15 @@ Microsoft application permissions and tenant consent must be provisioned externa
 | `restore/RestoreManager.php` | Restore queue and phase transitions |
 | `restore/DownloadManager.php` | Stream remote files to disk and check expected SHA-256 |
 | `restore/RestoreEngine.php` | ZIP extraction, batched SQL execution and rollback snapshot |
-| `schedule_backup_plugin.zip` | Existing distribution artifact; its 21 PHP entries match the 21 supplied PHP source files byte for byte at review time |
+| `restore/LocalBackup.php` | Private folder upload staging, manifest/part integrity verification and safe cleanup |
+| `restore/ManualRestore.php` | Confirmed background local restoration, actual-destination recovery snapshot and rollback |
+| `tests/run.php` | Isolated regression harness using temporary sites and WordPress/database stubs |
+| `README.md` | Installation, backup-selection and manual-restoration instructions |
+| `schedule_backup_plugin.zip` | Rebuilt 1.1.0 installable package; includes application PHP and README, excludes tests/SRS |
 
 ### Bootstrap detail that affects deployment
 
-Namespaces use capitalized components (`SPSync\Database`, `SPSync\Api`, etc.), but directories are lowercase (`database`, `api`, etc.). The autoloader preserves namespace casing when building paths. On a case-sensitive filesystem, it therefore looks for paths such as `Database/Installer.php` that do not match the supplied `database/Installer.php`. This is a source-derived deployment defect; Windows path behavior can conceal it.
+Namespaces use capitalized components (`SPSync\Database`, `SPSync\Api`, etc.), while directories are lowercase (`database`, `api`, etc.). Version 1.1.0 maps namespace directories to lowercase while retaining class filename casing, fixing the original case-sensitive-filesystem loading defect.
 
 ## 4. Functional requirements
 
@@ -71,7 +76,7 @@ Namespaces use capitalized components (`SPSync\Database`, `SPSync\Api`, etc.), b
 | P-FR-06 | Export table structure/data for tables matching the active WordPress prefix using 500-row fetch batches. | Implemented — database backup; no transaction snapshot guarantee |
 | P-FR-07 | Scan the WordPress installation, excluding backup/cache/temp/log directories and archive/log/temp extensions. | Implemented — file scanner |
 | P-FR-08 | Build independent ZIP parts from groups targeting 52,428,800 input bytes, with ZipArchive or PclZip. | Implemented — zip builder; individual oversized files are not split |
-| P-FR-09 | Produce SQL, ZIP files and a manifest with metadata, per-part sizes and SHA-256 hashes; enqueue every component including manifest. | Implemented — backup engine |
+| P-FR-09 | Produce the selected SQL/ZIP components and a manifest with selection metadata, per-part sizes and SHA-256 hashes; enqueue every component including manifest. | Implemented — backup engine; full website/database remains default |
 | P-FR-10 | Prevent ordinary overlapping backups using a timestamp lock, considering locks older than ten minutes stale. | Partial — non-atomic lock; manual action overrides it |
 | P-FR-11 | Process upload batches, default five files, using Action Scheduler or WP-Cron. | Implemented — queue manager |
 | P-FR-12 | Upload files below 4 MiB directly; use 3,276,800-byte chunks for larger files. | Implemented — storage |
@@ -81,11 +86,16 @@ Namespaces use capitalized components (`SPSync\Database`, `SPSync\Api`, etc.), b
 | P-FR-16 | Expose health, diagnostics, latest backup status, logs and remote connection test behind shared-key authentication. | Implemented — REST controller |
 | P-FR-17 | Discover remote backup folders and mark known absent backup IDs missing. | Partial — no completeness/hash validation or pagination |
 | P-FR-18 | Before restore, create local rollback SQL and selected-file snapshot, download manifest and enqueue manifest parts. | Implemented preparation, with coverage/concurrency limitations |
-| P-FR-19 | Stream downloads, check supplied SHA-256, retry downloads, extract ZIP parts and import SQL in resumable batches. | Partial — SQL error handling and self-overwrite issues |
-| P-FR-20 | On restore failure, attempt rollback and expose failed state. | Partial — rollback is incomplete and SQL batch completion is not guaranteed |
+| P-FR-19 | Stream downloads, check supplied SHA-256, retry downloads, validate/extract ZIP parts and import SQL in resumable batches. | Implemented with legacy parser limitations — failures propagate and plugin control tables are preserved |
+| P-FR-20 | On restore failure, attempt rollback and expose failed state. | Partial — rollback now completes SQL batches; remote rollback file coverage remains limited |
 | P-FR-21 | Perform dry-run/live URL replacement across prefix-matching text-like columns while preserving recognized PHP serialized data. | Implemented with query/error/security limitations |
 | P-FR-22 | Keep execution logs with severity/context and prune entries older than 30 days daily. | Implemented — logger |
 | P-FR-23 | Preserve custom data on deactivation. | Implemented — empty deactivation hook; no uninstall implementation supplied |
+| P-FR-24 | Offer a Backup Contents tab with entire website/database selected by default; allow plugins, themes, uploads and other discovered wp-content directories. | Implemented — selection class, scanner and admin tab |
+| P-FR-25 | Allow an optional database in selected mode, including database-only backups; reject empty/invalid selections and apply saved scope to every backup entry point. | Implemented — selection validation and shared backup engine |
+| P-FR-26 | Accept a plugin backup folder or its individual component files without SharePoint credentials; stage privately and verify manifest, lengths, hashes and archive paths before review. | Implemented — LocalBackup and Manual Restore tab |
+| P-FR-27 | Require an administrator nonce and explicit overwrite confirmation before queuing local restoration; restore only supplied components and display status/errors. | Implemented — admin handlers and ManualRestore |
+| P-FR-28 | Snapshot the actual overwritten local-restore files and optional database; on handled failure restore the snapshot, remove newly introduced files and retain recovery artifacts. | Implemented best-effort recovery; interrupted/killed processes can require administrator intervention |
 
 ## 5. Backup operation in detail
 
@@ -111,7 +121,9 @@ flowchart TD
 - Each part describes `filename`, `filesize`, `checksum`. The manifest itself is queued and hashed locally but is not included in its own parts array.
 - Remote path: selected library → configured root folder → backup ID folder → artifacts.
 
-Despite the `full` label, excluded file types/directories are not backed up. The scanner excludes directories named `.git`, `node_modules`, `cache`, `logs`, `tmp`, `spsync-backups` and extensions `log`, `tmp`, `zip`, `gz`, `tar`. SQL export includes plugin control tables because they share the WordPress prefix.
+Despite the `full` label, excluded file types/directories are not backed up. Full mode retains the original exclusions: directories named `.git`, `node_modules`, `cache`, `logs`, `tmp`, `spsync-backups` and extensions `log`, `tmp`, `zip`, `gz`, `tar`. Explicit-directory mode includes regular files and archive extensions inside those chosen directories, excluding backup storage and symlinks. SQL export still includes plugin control tables; the restore importer skips their generated DROP/CREATE/INSERT statements to preserve the active restore state.
+
+Manifests record `backup_type` as `full` or `selected` and include `selection` with mode, directory names and database inclusion. SQL is omitted when not selected; database-only backups contain SQL and a manifest without ZIP parts. Archives continue using installation-relative paths. Source directories outside the installation and symlinked directories are unsupported by the scanner.
 
 ZIP parts are separate archives, not byte segments of one multi-volume ZIP. The split threshold measures uncompressed input sizes; it is not a hard compressed-output size limit. Backup creation is synchronous within the worker/admin request and builds the file list in memory.
 
@@ -141,14 +153,11 @@ Rollback SQL covers prefix-matching tables. Rollback files cover themes, plugins
 ### Material restore limitations
 
 - No restore/backup mutual exclusion or restore-specific atomic lock is present. A second restore can truncate the first job's queue and overwrite shared paths/settings.
-- Database restore ignores `$wpdb->query()` failures. A missing/unreadable SQL file returns the same truthy result used for completion.
-- Database dumps include `spsync_settings`, logs and queue tables. Restoring them can overwrite the active restore job and progress state while the worker is running.
-- SQL restore offset is global and is not explicitly cleared at the beginning of a new normal restore.
-- Rollback invokes `restore_database()` only once; SQL exceeding one 500-statement batch is not driven to completion by that method.
-- Extraction's restored-flag update matches the literal filename `%.zip` with equality rather than a SQL `LIKE` expression.
-- Manifest filenames are used to build local paths and ZIPs extract into the installation without explicit manifest path/ZIP-entry containment validation in this code.
+- SQL restore reports missing/unreadable files, incomplete trailing statements and failed queries as errors. Generated statements targeting plugin control tables are skipped; new jobs reset the global SQL offset.
+- Rollback drives every SQL batch to completion. Remote rollback still has the limited file coverage described above; local rollback snapshots the actual destination files instead.
+- Remote manifest filenames are still used to build local paths without the strict filename restrictions used for local uploads. ZIP-entry traversal, absolute paths, special files and existing destination symlinks are now validated before extraction.
 - The manifest is downloaded without an independent trusted expected hash/signature. Part hashes detect mismatch against that manifest, not malicious replacement of both.
-- Restore status is nested in backup status only after a latest backup queue record is found. A fresh migration target without backup records can return `idle` without restore information.
+- Restore information is now returned by the status endpoint even without prior backup queue records.
 
 ### URL migration
 
@@ -210,17 +219,17 @@ WP-Cron timing depends on an external cron driver or site traffic. No exact exec
 
 | ID | Requirement | Assessment |
 |---|---|---|
-| P-NFR-01 | Load correctly on supported Windows and case-sensitive Linux installations. | Required gap — namespace/directory case mismatch |
+| P-NFR-01 | Load correctly on supported Windows and case-sensitive Linux installations. | Namespace/directory mapping fixed; a full Linux/WordPress integration check remains pending |
 | P-NFR-02 | Authenticate all remote destructive operations and authorize admin forms. | Implemented key/capability/nonce checks; key rotation and scoped access need operating policy |
 | P-NFR-03 | Ensure TLS verification for cloud calls. | Implemented on normal token, Graph, upload and download requests |
 | P-NFR-04 | Protect local backup, restore and rollback artifacts from web access. | Partial — backup directories get Apache denial/index files; equivalent protection for all shared restore/rollback paths and other servers is not established |
-| P-NFR-05 | Preserve recoverable job state across process failures and self-restoration. | Required gap — non-atomic/global control state and backed-up control tables |
-| P-NFR-06 | Do not report restore/rollback success after SQL or file failure. | Required gap — unchecked SQL and partial rollback |
+| P-NFR-05 | Preserve recoverable job state across process failures and self-restoration. | Partial — control-table import is skipped; local worker keeps loaded code during self-restoration; hard process loss can still require manual recovery |
+| P-NFR-06 | Do not report restore/rollback success after SQL or file failure. | Improved — SQL errors propagate and rollback finishes batches; recovery remains best-effort |
 | P-NFR-07 | Verify every backup component before retention/local deletion. | Required gap — current completion and verification logic are insufficient |
-| P-NFR-08 | Constrain all filesystem writes/extraction to intended destinations. | Required gap — explicit manifest and archive path validation needed |
+| P-NFR-08 | Constrain all filesystem writes/extraction to intended destinations. | Local upload filenames/private staging and ZIP entries validated; remote manifest filename handling remains a gap |
 | P-NFR-09 | Enforce retention over the complete remote inventory and only after confirmed deletion. | Required gap — pagination and delete-result handling |
 | P-NFR-10 | Bound memory and work on large sites. | Partial — row/chunk batching exists, but scanning, migration and some archive work hold full collections |
-| P-NFR-11 | Provide repeatable backup/restore integration tests. | Required gap — no plugin test suite supplied |
+| P-NFR-11 | Provide repeatable backup/restore integration tests. | 65 isolated regression checks and three real multipart upload cases passed; full WordPress/SharePoint integration remains pending |
 
 No backup encryption-at-rest feature for SQL/ZIP artifacts, incremental backups, verified point-in-time database consistency, multisite-wide orchestration, or measured RTO/RPO is implemented or established by the inspected source.
 
@@ -240,6 +249,18 @@ No backup encryption-at-rest feature for SQL/ZIP artifacts, incremental backups,
 | P-AC-10 | Dry-run/live migration on nested serialized values, quoted URLs and tables without simple primary keys. | P-FR-21 |
 | P-AC-11 | Test calendar recurrence, one-time failure, deactivation and multiple sites sharing cloud roots. | P-FR-15, P-NFR-09 |
 
-All 21 plugin PHP source files were included in a combined 60-file PHP syntax check with no syntax errors using PHP 8.3.30. A separate SHA-256 comparison found all 21 packaged PHP files identical to the supplied PHP source files. WordPress and SharePoint integration, actual restores, database migration and PHP 7.4 compatibility were not established by these checks. No live backup, restore, migration or retention operation was executed during this review.
+The initial review checked the original 21 plugin PHP files as part of a 60-file syntax pass and confirmed original ZIP/source parity. For 1.1.0, all plugin PHP is checked again and the installable package is rebuilt from current application sources. The new isolated harness passes 65 checks, including selected/full/database-only backups, manual file/database restoration, rollback after an SQL failure, unsafe/corrupt/missing artifacts, UI rendering and permission/confirmation gates. A temporary localhost PHP server also accepted a real multipart upload and rejected corrupt/missing parts in three cases.
+
+These tests use temporary fixtures and WordPress/database stubs. No production site or SharePoint tenant was modified, and live WordPress restoration, remote retention, migration and PHP 7.4 compatibility remain unverified. See `README.md` for upload limits, required private temporary storage, cron behavior and recovery limitations.
+
+## 12. Manual restoration operation added in 1.1.0
+
+Administrators upload a directory using a browser directory picker or select its individual files together. Supported artifacts are `manifest.json`, `database.sql` and `backup_partN.zip`; a ZIP wrapping the whole backup folder and other plugins' formats are not supported. Files are stored in a randomly named `spsync-import-UUID` directory under the system temp location, required to be outside WordPress/document root. A deployment may override the parent with `spsync_restore_temp_dir`.
+
+Verification requires each declared component exactly once, matching size/SHA-256, and valid ZIP entries. The manifest is capped at 1 MiB; archive expansion defaults to 2 GiB per part, configurable using `spsync_restore_max_expanded_bytes`. PHP/server request and file-count limits remain applicable. The review tab shows included files/sizes and requires a checked overwrite confirmation before scheduling.
+
+`spsync_manual_restore` executes the local operation in one background invocation, retaining loaded restore code even if the plugin files themselves are replaced. It snapshots existing destination files and optional database, then restores ZIPs and all SQL batches. A worker-specific option prevents duplicate execution; active status blocks new backup/restore starts, although a completely atomic lock across all older entry points is not established. Local worker status uses the existing plugin settings; legacy remote worker events ignore local job IDs.
+
+On handled failure, newly introduced files are removed and the snapshot is reapplied; recovery files remain private and their location is shown to administrators. Successful restoration flushes cache and removes staging/recovery files. A fatal interruption attempts to mark failure and retain artifacts; a killed server process can bypass PHP shutdown handling. Local restoration is not a transaction and does not automatically remove unrelated preexisting files or guarantee recovery from catastrophic resource/server failure.
 
 Open decisions: supported server/filesystem platforms, backup exclusion policy, per-site cloud isolation, full versus selective rollback coverage, lock/job identity design, trusted artifact format, and recovery targets.

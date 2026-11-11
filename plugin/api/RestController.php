@@ -232,12 +232,17 @@ class RestController extends WP_REST_Controller
     {
         global $wpdb;
         $table = $wpdb->prefix . 'spsync_items';
+        $restore = [
+            'restore_job_id' => Settings::get('restore_job_active'),
+            'status' => Settings::get('restore_status', 'completed'),
+        ];
 
         // Check if queue table exists
         if ($wpdb->get_var("SHOW TABLES LIKE '$table'") === null) {
             return new WP_REST_Response([
                 'status'  => 'idle',
-                'message' => 'Queue database table does not exist.'
+                'message' => 'Queue database table does not exist.',
+                'restore' => $restore,
             ], 200);
         }
 
@@ -247,7 +252,8 @@ class RestController extends WP_REST_Controller
         if (empty($latest_backup_id)) {
             return new WP_REST_Response([
                 'status'  => 'idle',
-                'message' => 'No backups have been scheduled or run yet.'
+                'message' => 'No backups have been scheduled or run yet.',
+                'restore' => $restore,
             ], 200);
         }
 

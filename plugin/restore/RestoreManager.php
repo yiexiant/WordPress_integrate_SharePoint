@@ -28,11 +28,28 @@ class RestoreManager
      */
     public static function start_restore($backup_id)
     {
+        if (!add_option('spsync_restore_start_lock', time(), '', false)) {
+            return false;
+        }
+        try {
+            return self::prepare_restore($backup_id);
+        } finally {
+            delete_option('spsync_restore_start_lock');
+        }
+    }
+
+    private static function prepare_restore($backup_id)
+    {
         global $wpdb;
 
         if (empty($backup_id)) {
             return false;
         }
+        if (in_array(Settings::get('restore_status'), ['downloading', 'extracting', 'restoring_database', 'cleanup'], true) || Settings::get('backup_running')) {
+            Logger::warning('Restore aborted: another backup or restoration is in progress.');
+            return false;
+        }
+        Settings::delete('restore_db_offset');
 
         $restore_job_id = 'spsync-restore-' . current_time('Ymd-His');
         Logger::info("Initializing restore job: $restore_job_id for backup: $backup_id");
@@ -120,6 +137,9 @@ class RestoreManager
         global $wpdb;
 
         $active_job = Settings::get('restore_job_active');
+        if (strpos($active_job, 'spsync-local-') === 0) {
+            return; // Manual restores have their own worker and private staging directory.
+        }
         $backup_id  = Settings::get('restore_backup_id');
         $status     = Settings::get('restore_status');
 
@@ -190,10 +210,12 @@ class RestoreManager
                 $zip_paths[] = $restore_dir . '/' . $item->filename;
             }
 
-            $success = RestoreEngine::restore_files($zip_paths);
+            $success = !$zip_paths || RestoreEngine::restore_files($zip_paths);
             if ($success) {
                 Logger::info('File extraction restoration complete.');
-                $wpdb->update($table, [ 'restored' => 1 ], [ 'restore_job_id' => $active_job, 'filename' => '%.zip' ]);
+                foreach ($zip_items as $item) {
+                    $wpdb->update($table, ['restored' => 1], ['id' => $item->id]);
+                }
                 Settings::set('restore_status', 'restoring_database');
             } else {
                 self::handle_restore_failure('Backup file extraction failed.');
@@ -216,6 +238,11 @@ class RestoreManager
                 
                 // Executes batch statement run. Returns true if file parsing is finished.
                 $db_done = RestoreEngine::restore_database($sql_path);
+
+                if (is_wp_error($db_done)) {
+                    self::handle_restore_failure($db_done->get_error_message());
+                    return;
+                }
 
                 if ($db_done) {
                     $wpdb->update($table, [ 'restored' => 1 ], [ 'id' => $sql_item->id ]);

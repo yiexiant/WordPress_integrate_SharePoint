@@ -81,15 +81,23 @@ class ZipBuilder
             if ($has_zip_archive) {
                 $zip = new \ZipArchive();
                 if ($zip->open($zip_file_path, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) === true) {
+                    $complete = true;
                     foreach ($batch_files as $filepath) {
                         $normalized = str_replace('\\', '/', $filepath);
                         $relative_name = (strpos($normalized, $root_path) === 0) 
                             ? ltrim(substr($normalized, strlen($root_path)), '/') 
                             : $normalized;
-                        $zip->addFile($filepath, $relative_name);
+                        if (!$zip->addFile($filepath, $relative_name)) {
+                            $complete = false;
+                            break;
+                        }
                     }
-                    $zip->close();
-                    $created_parts[] = $zip_file_path;
+                    $closed = $zip->close();
+                    if ($complete && $closed) {
+                        $created_parts[] = $zip_file_path;
+                    } else {
+                        Logger::error('ZIP Builder Failed: An archive could not be written completely.');
+                    }
                 } else {
                     Logger::error('ZIP Builder Failed: Could not open ZIP file for writing.', ['file' => $zip_file_path]);
                 }
@@ -97,12 +105,22 @@ class ZipBuilder
                 // Use WordPress native PclZip engine fallback
                 $archive = new \PclZip($zip_file_path);
                 $v_list = $archive->create($batch_files, PCLZIP_OPT_REMOVE_PATH, ABSPATH);
-                if ($v_list != 0) {
+                if (is_array($v_list) && count($v_list) === count($batch_files)) {
                     $created_parts[] = $zip_file_path;
                 } else {
                     Logger::error('ZIP Builder Failed (PclZip): ' . $archive->errorInfo(true), ['file' => $zip_file_path]);
                 }
             }
+        }
+
+        if (count($created_parts) !== count($batches)) {
+            foreach (array_keys($batches) as $index) {
+                $part = sprintf('%s/backup_part%03d.zip', rtrim($output_dir, '/'), $index + 1);
+                if (is_file($part)) {
+                    @unlink($part);
+                }
+            }
+            return [];
         }
 
         Logger::info('ZIP compilation complete. Split archives created successfully.', [

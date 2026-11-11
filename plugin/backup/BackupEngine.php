@@ -19,6 +19,16 @@ class BackupEngine
     {
         global $wp_version, $wpdb;
 
+        if (get_option('spsync_restore_start_lock') || in_array(Settings::get('restore_status'), ['downloading', 'extracting', 'restoring_database', 'cleanup'], true)) {
+            Logger::warning('Backup aborted: a restoration is in progress.');
+            return false;
+        }
+        $selection = BackupSelection::get();
+        if ($selection['mode'] === 'selected' && !$selection['directories'] && !$selection['database']) {
+            Logger::error('Backup aborted: no selected directories remain available. Review Backup Contents.');
+            return false;
+        }
+
         // Prevent process timeouts during long operations
         if (function_exists('set_time_limit')) {
             @set_time_limit(0);
@@ -63,7 +73,7 @@ class BackupEngine
         $db_file = $base_dir . '/database.sql';
         
         // 2. Export WordPress Database
-        $db_success = DatabaseBackup::export($db_file);
+        $db_success = !$selection['database'] || DatabaseBackup::export($db_file);
         if (!$db_success) {
             Logger::error('Backup Failed: Database SQL export failed.');
             Settings::delete('backup_running');
@@ -71,16 +81,17 @@ class BackupEngine
         }
 
         // 3. Scan WordPress directories
-        $scanned_files = FileScanner::scan();
-        if (empty($scanned_files)) {
+        $roots = $selection['mode'] === 'full' ? null : array_values(array_intersect_key(BackupSelection::directories(), array_flip($selection['directories'])));
+        $scanned_files = FileScanner::scan([], $roots);
+        if (empty($scanned_files) && !$selection['database']) {
             Logger::error('Backup Failed: Directory scanner found no matching assets.');
             Settings::delete('backup_running');
             return false;
         }
 
         // 4. Compress files into split ZIP parts
-        $zip_parts = ZipBuilder::build($scanned_files, $base_dir);
-        if (empty($zip_parts)) {
+        $zip_parts = $scanned_files ? ZipBuilder::build($scanned_files, $base_dir) : [];
+        if ($scanned_files && empty($zip_parts)) {
             Logger::error('Backup Failed: ZIP packaging and compression failed.');
             Settings::delete('backup_running');
             return false;
@@ -90,13 +101,15 @@ class BackupEngine
         $parts_info = [];
         
         // Database metrics
-        $db_filesize = filesize($db_file);
-        $db_hash = hash_file('sha256', $db_file);
-        $parts_info[] = [
-            'filename' => basename($db_file),
-            'filesize' => $db_filesize,
-            'checksum' => $db_hash
-        ];
+        if ($selection['database']) {
+            $db_filesize = filesize($db_file);
+            $db_hash = hash_file('sha256', $db_file);
+            $parts_info[] = [
+                'filename' => basename($db_file),
+                'filesize' => $db_filesize,
+                'checksum' => $db_hash
+            ];
+        }
 
         // Zipped parts metrics
         foreach ($zip_parts as $part) {
@@ -114,7 +127,8 @@ class BackupEngine
             'wordpress_version' => $wp_version,
             'php_version'       => PHP_VERSION,
             'plugin_version'    => SPSYNC_VERSION,
-            'backup_type'       => 'full',
+            'backup_type'       => $selection['mode'],
+            'selection'         => $selection,
             'parts'             => $parts_info
         ];
 

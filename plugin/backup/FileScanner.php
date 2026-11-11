@@ -18,7 +18,7 @@ class FileScanner
      * @param array $exclusions Custom directories to exclude.
      * @return array List of absolute file paths matching scan criteria.
      */
-    public static function scan($exclusions = [])
+    public static function scan($exclusions = [], $roots = null)
     {
         Logger::info('Starting directory file scanning...');
 
@@ -34,6 +34,10 @@ class FileScanner
             'tmp',
             'spsync-backups' // Prevent recursive backing up of our own backup repository
         ];
+        if ($roots !== null) {
+            // Explicit selection includes all regular files in those directories.
+            $default_exclusions = ['spsync-backups'];
+        }
         
         $exclude_dirs = array_merge($default_exclusions, $exclusions);
         
@@ -44,52 +48,69 @@ class FileScanner
             'gz',
             'tar'
         ];
+        if ($roots !== null) {
+            $exclude_extensions = [];
+        }
 
         if (!file_exists($root_path)) {
             Logger::error('File Scanner Failed: WordPress root directory path does not exist.', [ 'path' => $root_path ]);
             return [];
         }
 
-        $dir_iterator = new RecursiveDirectoryIterator($root_path, RecursiveDirectoryIterator::SKIP_DOTS);
+        $roots = $roots === null ? [$root_path] : $roots;
+        $site_root = realpath($root_path);
+        foreach ($roots as $scan_root) {
+            $resolved_root = realpath($scan_root);
+            if (!$resolved_root || !$site_root || !is_dir($resolved_root) || is_link($scan_root) ||
+                ($resolved_root !== $site_root && strpos(str_replace('\\', '/', $resolved_root) . '/', rtrim(str_replace('\\', '/', $site_root), '/') . '/') !== 0)) {
+                continue;
+            }
+            $dir_iterator = new RecursiveDirectoryIterator($resolved_root, RecursiveDirectoryIterator::SKIP_DOTS);
         
-        // Use RecursiveCallbackFilterIterator to prevent scanning inside excluded folders entirely
-        $filter_iterator = new RecursiveCallbackFilterIterator($dir_iterator, function ($current, $key, $iterator) use ($exclude_dirs) {
-            if ($current->isDir()) {
-                $dir_name = $current->getFilename();
-                if (in_array($dir_name, $exclude_dirs, true)) {
+            // Use RecursiveCallbackFilterIterator to prevent scanning inside excluded folders entirely
+            $filter_iterator = new RecursiveCallbackFilterIterator($dir_iterator, function ($current, $key, $iterator) use ($exclude_dirs) {
+                if ($current->isLink()) {
                     return false;
                 }
-            }
-            return true;
-        });
-
-        $iterator = new RecursiveIteratorIterator($filter_iterator, RecursiveIteratorIterator::LEAVES_ONLY);
-
-        foreach ($iterator as $file_info) {
-            if ($file_info->isFile()) {
-                $filepath = $file_info->getRealPath();
-                $ext = strtolower(pathinfo($filepath, PATHINFO_EXTENSION));
-
-                // Skip files matching excluded extensions
-                if (in_array($ext, $exclude_extensions, true)) {
-                    continue;
-                }
-
-                // Normalize path to verify sub-directory matches (safety fallback)
-                $normalized_path = str_replace('\\', '/', $filepath);
-                $is_excluded = false;
-                foreach ($exclude_dirs as $dir) {
-                    if (strpos($normalized_path, '/' . $dir . '/') !== false) {
-                        $is_excluded = true;
-                        break;
+                if ($current->isDir()) {
+                    $dir_name = $current->getFilename();
+                    if (in_array($dir_name, $exclude_dirs, true)) {
+                        return false;
                     }
                 }
+                return true;
+            });
 
-                if (!$is_excluded) {
-                    $files[] = $filepath;
+            $iterator = new RecursiveIteratorIterator($filter_iterator, RecursiveIteratorIterator::LEAVES_ONLY);
+
+            foreach ($iterator as $file_info) {
+                if ($file_info->isFile()) {
+                    $filepath = $file_info->getRealPath();
+                    $ext = strtolower(pathinfo($filepath, PATHINFO_EXTENSION));
+
+                    // Skip files matching excluded extensions
+                    if (in_array($ext, $exclude_extensions, true)) {
+                        continue;
+                    }
+
+                    // Normalize path to verify sub-directory matches (safety fallback)
+                    $normalized_path = str_replace('\\', '/', $filepath);
+                    $is_excluded = false;
+                    foreach ($exclude_dirs as $dir) {
+                        if (strpos($normalized_path, '/' . $dir . '/') !== false) {
+                            $is_excluded = true;
+                            break;
+                        }
+                    }
+
+                    if (!$is_excluded) {
+                        $files[] = $filepath;
+                    }
                 }
             }
         }
+
+        $files = array_values(array_unique($files));
 
         Logger::info('File scanning completed successfully.', [
             'total_files_scanned' => count($files)
