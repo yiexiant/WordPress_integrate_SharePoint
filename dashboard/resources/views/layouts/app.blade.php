@@ -75,6 +75,7 @@
                     </a>
                 </div>
 
+                @auth
                 <!-- Navigation Links (Clean Text, No Icons) -->
                 <nav class="hidden md:flex items-center gap-1">
                     <a href="{{ route('dashboard') }}" class="px-4 py-2 rounded-lg text-sm font-semibold transition-colors {{ request()->routeIs('dashboard') ? 'bg-red-50 text-red-700 border border-red-200/60' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100' }}">
@@ -90,7 +91,15 @@
                     <a href="{{ route('websites.create') }}" class="px-4 py-2 rounded-lg text-sm font-semibold text-white bg-red-600 hover:bg-red-700 shadow-sm transition">
                         Add Website
                     </a>
+                    <span class="hidden lg:inline text-xs text-slate-500">{{ auth()->user()->name }}</span>
+                    <form method="POST" action="{{ route('logout') }}">
+                        @csrf
+                        <button type="submit" class="px-3 py-2 rounded-lg text-sm font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition">
+                            Sign out
+                        </button>
+                    </form>
                 </div>
+                @endauth
             </div>
         </div>
     </header>
