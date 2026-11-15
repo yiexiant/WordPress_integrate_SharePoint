@@ -2,6 +2,8 @@
 
 Version 1.4.0. Install `schedule_backup_plugin.zip` through WordPress **Plugins → Add New → Upload Plugin**, then open **SharePoint Backup**.
 
+> **Production rollout** (Entra ID app registration, Graph permissions, server cron, Nginx rule, verification, upgrades): see [DEPLOYMENT.md](DEPLOYMENT.md).
+
 ## Connect another dashboard through the API
 
 Copy the **Secret API Key** from Overview into the dashboard's backup-plugin connection form with this WordPress site's URL. Authenticated requests use `X-SPSYNC-KEY` under `/wp-json/spsync/v1/`. The SEO backend in the neighboring package now provides a dedicated `/backup-dashboard` page and client-scoped backup API; its SAC publishing token remains separate.
