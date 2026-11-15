@@ -1,7 +1,7 @@
 # Software Requirements Specification — WordPress SharePoint Backup Plugin
 
-Document version: 1.3.0
-Review date: 11 November 2026  
+Document version: 1.4.0
+Review date: 15 November 2026  
 Scope: `plugin/` source; packaged ZIP assessed separately  
 Basis: the original source plus the 1.1.0 selection/restoration and 1.2.0 manual-device/automatic-cloud workflows and regression harness. This document includes the implementation changes made on 11 November 2026.
 
@@ -17,7 +17,7 @@ The Laravel dashboard in `../dashboard/` and the Python SEO backend are remote b
 
 | Item | Declared or observed requirement |
 |---|---|
-| Plugin identity | WordPress SharePoint Backup Plugin; `SPSYNC_VERSION` 1.3.0 |
+| Plugin identity | WordPress SharePoint Backup Plugin; `SPSYNC_VERSION` 1.4.0 |
 | Declared compatibility | PHP 7.4+, WordPress 6.0+ in entry header; not fully compatibility-tested |
 | Database | WordPress `$wpdb` with MySQL-style SQL |
 | Archive support | ZipArchive preferred; WordPress PclZip fallback |
@@ -51,7 +51,9 @@ Microsoft application permissions and tenant consent must be provisioned externa
 | `backup/ZipBuilder.php` | Independent ZIP parts grouped by input size |
 | `backup/Retention.php` | Oldest matching remote folder pruning |
 | `queue/QueueManager.php` | Background batches and upload completion cleanup |
-| `storage/SharePointStorage.php` | Remote backup folders, small uploads and chunk sessions |
+| `storage/SharePointStorage.php` | Remote backup folders (inside the site folder), small uploads and chunk sessions |
+| `storage/RemoteInventory.php` | Per-site folder naming/resolution, paginated listings, this site's backup inventory incl. claimed legacy folders |
+| `helpers/LocalPaths.php` | Unguessable local staging/restore/rollback directories and web-server deny rules |
 | `scheduler/Scheduler.php` | Calendar start-time calculation and cron event setup |
 | `restore/RestoreManager.php` | Restore queue and phase transitions |
 | `restore/DownloadManager.php` | Stream remote files to disk and check expected SHA-256 |
@@ -60,7 +62,7 @@ Microsoft application permissions and tenant consent must be provisioned externa
 | `restore/ManualRestore.php` | Immediate after-response restoration, durable scheduled fallback, destination snapshot and rollback |
 | `tests/run.php` | Isolated regression harness using temporary sites and WordPress/database stubs |
 | `README.md` | Installation, backup-selection and manual-restoration instructions |
-| `schedule_backup_plugin.zip` | Rebuilt 1.3.0 installable package; includes application PHP and README, excludes tests/SRS |
+| `schedule_backup_plugin.zip` | Rebuilt 1.4.0 installable package; includes application PHP and README, excludes tests/SRS |
 
 ### Bootstrap detail that affects deployment
 
@@ -83,10 +85,10 @@ Namespaces use capitalized components (`SPSync\Database`, `SPSync\Api`, etc.), w
 | P-FR-11 | Process upload batches, default five files, using Action Scheduler or WP-Cron. | Implemented — queue manager |
 | P-FR-12 | Upload files below 4 MiB directly; use 3,276,800-byte chunks for larger files. | Implemented — storage |
 | P-FR-13 | Retry chunk network/throttle failures and retry whole-file attempts, marking permanent failure. | Partial — some early errors bypass retries |
-| P-FR-14 | Remove local backup files after successful queue completion and enforce retention. | Partial — final-batch bookkeeping does not establish all-job success |
-| P-FR-15 | Schedule manual, daily, weekly, monthly and one-time backups at a selected WordPress-local start time. | Partial — monthly recurrence is fixed 30-day interval |
+| P-FR-14 | Remove local backup files after successful queue completion and enforce retention. | Implemented (1.4.0) — finalized per backup from all its rows; failed components keep the local copy |
+| P-FR-15 | Schedule manual, daily, weekly, monthly and one-time backups at a selected WordPress-local start time. | Implemented (1.4.0) — monthly is a calendar-day single event re-armed after each run |
 | P-FR-16 | Expose health, diagnostics, latest backup status, logs and remote connection test behind shared-key authentication. | Implemented — REST controller |
-| P-FR-17 | Discover remote backup folders and mark known absent backup IDs missing. | Partial — complete paginated listing is required before mutation; folder presence is not a completeness/hash check |
+| P-FR-17 | Discover this site's remote backup folders and mark known absent backup IDs missing. | Implemented (1.4.0) — site-scoped, paginated; childCount completeness check; pending and reappearing backups handled; not a hash check |
 | P-FR-18 | Before restore, create local rollback SQL and selected-file snapshot, download manifest and enqueue manifest parts. | Implemented preparation, with coverage/concurrency limitations |
 | P-FR-19 | Stream downloads, check supplied SHA-256, retry downloads, validate/extract ZIP parts and import SQL in resumable batches. | Implemented with legacy parser limitations — failures propagate and plugin control tables are preserved |
 | P-FR-20 | On restore failure, attempt rollback and expose failed state. | Partial — rollback now completes SQL batches; remote rollback file coverage remains limited |
@@ -122,11 +124,11 @@ flowchart TD
 ### Artifact contract
 
 - Backup ID: `spsync-backup-YYYYMMDD-HHMMSS`, generated using WordPress local time.
-- Local directory: `{uploads_basedir}/spsync-backups/{backup_id}/`.
+- Local directory: `{uploads_basedir}/spsync-backups/{random token}/{backup_id}/` (1.4.0; previously without token).
 - Files: `database.sql`, `backup_part001.zip` and following parts, `manifest.json`.
 - Manifest: `backup_id`, UTC timestamp, WordPress/PHP/plugin versions, `backup_type: full`, `parts` array.
 - Each part describes `filename`, `filesize`, `checksum`. The manifest itself is queued and hashed locally but is not included in its own parts array.
-- Remote path: selected library → configured root folder → backup ID folder → artifacts.
+- Remote path: selected library → configured root folder → site folder → backup ID folder → artifacts (site folder added in 1.4.0).
 
 Despite the `full` label, excluded file types/directories are not backed up. Full mode retains the original exclusions: directories named `.git`, `node_modules`, `cache`, `logs`, `tmp`, `spsync-backups` and extensions `log`, `tmp`, `zip`, `gz`, `tar`. Explicit-directory mode includes regular files and archive extensions inside those chosen directories, excluding backup storage and symlinks. SQL export still includes plugin control tables; the restore importer skips their generated DROP/CREATE/INSERT statements to preserve the active restore state.
 
@@ -140,7 +142,7 @@ Item states are `queued`, `uploading`, `done`, `error`, and later `missing`. Wor
 
 Chunk requests allow three attempts for network failures or throttling. Network waits are `retries * 2` seconds, a linear sequence rather than the exponential backoff described in a comment. Throttling uses `Retry-After` where available. Other chunk HTTP failures terminate that session. Whole-file retries create a new session; byte offsets and upload sessions are not persisted across workers.
 
-The queue is global across backups. Final cleanup uses the first item of the last batch and the current batch's failure flag. It does not independently verify success of every item in every backup before deleting local files or enforcing retention.
+The queue is global across backups. As of 1.4.0 each backup touched by a batch is finalized from all of its own rows: local files are pruned and retention runs only when every component is `done`.
 
 ## 6. Restore and migration operation
 
@@ -162,7 +164,7 @@ Rollback SQL covers prefix-matching tables. Rollback files cover themes, plugins
 - No restore/backup mutual exclusion or restore-specific atomic lock is present. A second restore can truncate the first job's queue and overwrite shared paths/settings.
 - SQL restore reports missing/unreadable files, incomplete trailing statements and failed queries as errors. Generated statements targeting plugin control tables are skipped; new jobs reset the global SQL offset.
 - Rollback drives every SQL batch to completion. Remote rollback still has the limited file coverage described above; local rollback snapshots the actual destination files instead.
-- Remote manifest filenames are still used to build local paths without the strict filename restrictions used for local uploads. ZIP-entry traversal, absolute paths, special files and existing destination symlinks are now validated before extraction.
+- Remote manifests are validated (allowed filenames, SHA-256, unique parts, matching backup ID) before use as of 1.4.0. ZIP-entry traversal, absolute paths, special files and existing destination symlinks are now validated before extraction.
 - The manifest is downloaded without an independent trusted expected hash/signature. Part hashes detect mismatch against that manifest, not malicious replacement of both.
 - Restore information is now returned by the status endpoint even without prior backup queue records.
 
@@ -172,7 +174,7 @@ Rollback SQL covers prefix-matching tables. Rollback files cover themes, plugins
 
 Dry run computes counts and writes execution logs but skips target-row changes. Live mode also sets `siteurl` and `home` to the new URL regardless of whether the old URL matched them, then flushes rewrite rules/cache. Reported counts track intended changed rows rather than confirmed successful SQL writes.
 
-The candidate-row `LIKE` condition is assembled with `esc_like()` but not a prepared value; SQL quoting and hostile input handling require correction. `unserialize()` is used without restricting allowed object classes. Full candidate result sets are loaded into memory.
+The candidate-row `LIKE` value is bound with `prepare()` and only http(s) URLs are accepted (1.4.0). `unserialize()` is used without restricting allowed object classes. Full candidate result sets are loaded into memory.
 
 ## 7. REST interface specification
 
@@ -212,15 +214,15 @@ Client-secret encryption uses AES-256-CBC, random IV and a key derived from Word
 ## 9. Scheduling and retention
 
 - Daily uses WordPress's daily interval; weekly uses seven days.
-- Monthly calculates an initial selected day clamped to 1–28, then repeats every 30 days. This can drift from the selected calendar date.
+- Monthly uses the selected day clamped to 1–28 as a single event re-armed each run (1.4.0); no drift.
 - One-time invalid/past date falls back to one hour from now rather than rejecting it.
 - After the scheduled hook, `once` is reset to manual even if backup generation fails.
 - Normal admin backup respects the running-job lock; the explicit reset-lock action remains available for stale locks.
-- Deactivation does not clear backup/upload/restore/log cleanup hooks.
-- Retention defaults to 30; a nonpositive limit skips pruning. Matching `spsync-backup-` folders are sorted by name, oldest first. Only one listing page is inspected.
-- Retention deletes corresponding queue rows without checking whether the remote DELETE succeeded, potentially losing local tracking for a still-present backup.
+- Deactivation clears backup/upload/restore/log cleanup hooks; activation restores the saved schedule and resumes pending uploads (1.4.0).
+- Retention defaults to 30 per site; a nonpositive limit skips pruning. This site's `spsync-backup-` folders (site folder plus claimed legacy) are sorted by name, oldest first, across all listing pages.
+- Queue rows are removed only after SharePoint confirms the DELETE.
 
-WP-Cron timing depends on an external cron driver or site traffic. No exact execution-time guarantee is established. Multiple sites using the same cloud root can affect each other's discovered backups and retention because the folder hierarchy has no enforced site-identity level.
+WP-Cron timing depends on an external cron driver or site traffic. No exact execution-time guarantee is established. As of 1.4.0 each site uses its own site folder under the shared root, so sites no longer affect each other's verification or retention. Two sites configured with the same site folder name would still share an inventory.
 
 ## 10. Nonfunctional requirements
 
@@ -229,12 +231,12 @@ WP-Cron timing depends on an external cron driver or site traffic. No exact exec
 | P-NFR-01 | Load correctly on supported Windows and case-sensitive Linux installations. | Namespace/directory mapping fixed; a full Linux/WordPress integration check remains pending |
 | P-NFR-02 | Authenticate all remote destructive operations and authorize admin forms. | Implemented key/capability/nonce checks; key rotation and scoped access need operating policy |
 | P-NFR-03 | Ensure TLS verification for cloud calls. | Implemented on normal token, Graph, upload and download requests |
-| P-NFR-04 | Protect local backup, restore and rollback artifacts from web access. | Partial — backup directories get Apache denial/index files; equivalent protection for all shared restore/rollback paths and other servers is not established |
+| P-NFR-04 | Protect local backup, restore and rollback artifacts from web access. | Partial — unguessable token directory plus Apache 2.2/2.4 and IIS deny rules; Nginx needs the documented server rule |
 | P-NFR-05 | Preserve recoverable job state across process failures and self-restoration. | Partial — control-table import is skipped; local worker keeps loaded code during self-restoration; hard process loss can still require manual recovery |
 | P-NFR-06 | Do not report restore/rollback success after SQL or file failure. | Improved — SQL errors propagate and rollback finishes batches; recovery remains best-effort |
-| P-NFR-07 | Verify every backup component before retention/local deletion. | Required gap — current completion and verification logic are insufficient |
-| P-NFR-08 | Constrain all filesystem writes/extraction to intended destinations. | Local upload filenames/private staging and ZIP entries validated; remote manifest filename handling remains a gap |
-| P-NFR-09 | Enforce retention over the complete remote inventory and only after confirmed deletion. | Required gap — pagination and delete-result handling |
+| P-NFR-07 | Verify every backup component before retention/local deletion. | Implemented (1.4.0) — per-backup completion; verification uses childCount, not hashes |
+| P-NFR-08 | Constrain all filesystem writes/extraction to intended destinations. | Implemented — local and remote manifest filenames and ZIP entries validated |
+| P-NFR-09 | Enforce retention over the complete remote inventory and only after confirmed deletion. | Implemented (1.4.0) |
 | P-NFR-10 | Bound memory and work on large sites. | Partial — row/chunk batching exists, but scanning, migration and some archive work hold full collections |
 | P-NFR-11 | Provide repeatable backup/restore integration tests. | 132 isolated checks, 11 HTTP upload/restore cases and a PclZip fallback check passed; live WordPress/SharePoint integration remains pending |
 
@@ -301,3 +303,17 @@ Immediate dispatch runs the existing idempotent worker during WordPress shutdown
 Validation: 132 regression checks passed. Eleven real multipart HTTP cases restored a disposable fixture site immediately from wrapped/flat ZIPs, a folder and individual files without running cron, and rejected corrupt, missing, unsafe, unconfirmed or unauthorized uploads without changing site files. A separate run without ZipArchive verified PclZip extraction/checksums. No production website was restored as part of these checks.
 
 Open decisions: supported server/filesystem platforms, backup exclusion policy, per-site cloud isolation, full versus selective rollback coverage, lock/job identity design, trusted artifact format, and recovery targets.
+
+## 16. Fleet isolation, hardening and monitoring added in 1.4.0
+
+**Per-site folders.** `RemoteInventory` resolves `{root}/{site folder}`. The site folder name is derived once from `home_url()` (host plus path, sanitized, never starting with `spsync-backup-`), persisted in `site_folder`, editable on the Credentials tab, and recreated when it was deleted. Every listing follows Graph `@odata.nextLink` pages hosted on `graph.microsoft.com/v1.0/` only. Any failed or incomplete page aborts the operation without changing state. A site's inventory is its site folder plus legacy root-level `spsync-backup-*` folders whose IDs appear in its own `spsync_items` table. Cross-site restore requires an explicit `source_site_folder` (sanitized sibling name).
+
+**Verification** classifies each locally tracked backup as verified, `incomplete` (remote `childCount` below the uploaded component count), `missing` (fully uploaded, folder absent) or `pending` (not yet fully uploaded, never flagged missing). Rows already `missing` return to `done` when the folder reappears.
+
+**Monitoring contract.** Every `backup/status` response includes `last_successful_backup` (`backup_id`, ISO-8601 UTC `created_at` of the newest backup whose rows are all `done`), `schedule.frequency`, `schedule.next_run` (ISO-8601 UTC or null), `site_folder`, `plugin_version`, and `restore.{restore_job_id,status,backup_id,error}`.
+
+**Hardening.** URL migration binds its `LIKE` value and accepts only http(s) URLs. Remote manifests are validated before use. Backup folders are created with `conflictBehavior=fail`. Local SharePoint staging uses `uploads/spsync-backups/{32-hex token}/` with deny rules. Uploads queued before the upgrade are still read from the legacy path.
+
+**Lifecycle.** Monthly schedules are calendar single events. Deactivation unschedules plugin cron hooks. Activation and version upgrade re-arm the saved schedule.
+
+Validation: 164 isolated regression checks pass (PHP 8.3), covering site-folder derivation and sanitization, isolation from other sites' legacy folders, pagination and untrusted next links, site-folder recreation, verification classification, confirmed-delete retention, manifest validation, SQL binding in URL migration, staging protection, monitoring fields and monthly re-arming. No live SharePoint tenant was used. Validate on a staging site with two websites sharing one root before production use.

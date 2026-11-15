@@ -1,12 +1,32 @@
 # WordPress SharePoint Backup Plugin
 
-Version 1.3.0. Install `schedule_backup_plugin.zip` through WordPress **Plugins → Add New → Upload Plugin**, then open **SharePoint Backup**.
+Version 1.4.0. Install `schedule_backup_plugin.zip` through WordPress **Plugins → Add New → Upload Plugin**, then open **SharePoint Backup**.
 
 ## Connect another dashboard through the API
 
 Copy the **Secret API Key** from Overview into the dashboard's backup-plugin connection form with this WordPress site's URL. Authenticated requests use `X-SPSYNC-KEY` under `/wp-json/spsync/v1/`. The SEO backend in the neighboring package now provides a dedicated `/backup-dashboard` page and client-scoped backup API; its SAC publishing token remains separate.
 
 Version 1.2.1 keeps the ID returned by `POST backup/start` unchanged when its worker creates artifacts. `GET backup/status` reports a queued API request before packaging starts and reports identifiable pre-upload failures. The worker still needs WordPress cron or Action Scheduler. API backup commands create SharePoint backups; device downloads remain administrator actions inside WordPress.
+
+## Several websites in one SharePoint library
+
+Each website stores its backups in its own **Site Folder** inside the Root Backup Folder:
+
+```
+{Document Library}/{Root Backup Folder}/{Site Folder}/spsync-backup-YYYYMMDD-HHMMSS/
+```
+
+The site folder defaults to the website's host and path (for example `shop.example.com-store`), is saved on first use, and can be changed in **Credentials**. Retention, verification and restore only consider this website's folder, so websites sharing a root can never prune or claim each other's backups. Pick the site folder before the first backup. Renaming it later hides older backups from retention and verification.
+
+Backups created before 1.4.0 sit directly in the root folder. They are still found for restore, verification and retention when this website's own upload history recorded their ID, and they are ignored otherwise. To restore another website's backup (migration), call `POST restore/start` with `backup_id` and `source_site_folder` (the other website's site folder name). The central dashboard does this for you.
+
+## Protecting local backup files
+
+While uploading, backups are staged under `wp-content/uploads/spsync-backups/<random token>/`. Deny rules are written for Apache 2.2/2.4 and IIS. **Nginx ignores them.** The random token prevents guessing, but on Nginx you should also add:
+
+```nginx
+location ~* /wp-content/uploads/spsync-backups/ { deny all; }
+```
 
 ## Choose manual or automatic backups
 
@@ -98,3 +118,17 @@ The harness uses temporary fixture files and WordPress/database stubs. It does n
 - Added immediate response-shutdown restore dispatch, retaining the scheduled worker as a fallback and preventing duplicate execution.
 - Preserved retry support for existing verified uploads when another job or a scheduling problem prevents immediate start.
 - Added package-layout, multiple-manifest, traversal, expanded-size and incomplete-part checks before restoration.
+
+## Release notes — 1.4.0
+
+- **Per-site SharePoint folders.** Retention, verification and restore are limited to this website. Legacy root-level backups are claimed only if this site recorded them. Cross-site restore needs an explicit `source_site_folder`.
+- Retention follows Graph pagination and drops local tracking only after SharePoint confirms the delete.
+- Verification reports `incomplete_backups` (folder has fewer files than uploaded) and `pending_backups` (still uploading) instead of flagging them missing, and marks reappearing backups present again.
+- Upload completion is judged per backup, so a failed component keeps the local copy and a different backup is never pruned.
+- Remote restore validates manifest filenames and checksums, finds the backup before the rollback snapshot, and never creates SharePoint folders.
+- Backup folders are created with `conflictBehavior=fail` instead of `replace`.
+- URL migration binds its search value in SQL (fixes an injection via `database/search-replace`) and accepts only http(s) URLs.
+- Local staging moved to an unguessable token directory, with Apache 2.4/2.2 and IIS deny rules.
+- `backup/status` adds `last_successful_backup`, `schedule` (frequency, next run), `site_folder`, `plugin_version` and `restore.error`. `health` and `system/info` add `site_url` and `site_folder`.
+- Monthly schedules stay on the chosen calendar day. Deactivation clears cron events; activation and upgrade restore them.
+- Changing the library or root folder clears cached SharePoint IDs.
