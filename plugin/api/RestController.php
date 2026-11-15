@@ -6,6 +6,7 @@ use WP_REST_Server;
 use WP_REST_Response;
 use SPSync\Helpers\Settings;
 use SPSync\Auth\GraphClient;
+use SPSync\Storage\RemoteInventory;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -216,6 +217,8 @@ class RestController extends WP_REST_Controller
             'upload_max'        => $upload_max,
             'database_size'     => $db_size_format,
             'sharepoint_folder' => $sharepoint_folder,
+            'site_folder'       => RemoteInventory::site_folder_name(),
+            'site_url'          => home_url(),
             'disk'              => [
                 'free_bytes'  => $free_space,
                 'total_bytes' => $total_space,
@@ -388,7 +391,17 @@ class RestController extends WP_REST_Controller
             return new \WP_Error('restore_busy', 'Another backup or restoration is already queued or running.', ['status' => 409]);
         }
 
-        $restore_job_id = \SPSync\Restore\RestoreManager::start_restore($backup_id);
+        // Optional: restore another site's backup (migration). Only a sibling folder name is accepted.
+        $source = $request->get_param('source_site_folder');
+        if ($source !== null && $source !== '') {
+            if (!is_string($source) || RemoteInventory::sanitize_folder_name($source) !== $source) {
+                return new \WP_Error('invalid_source', 'Invalid source_site_folder parameter.', [ 'status' => 400 ]);
+            }
+        } else {
+            $source = null;
+        }
+
+        $restore_job_id = \SPSync\Restore\RestoreManager::start_restore($backup_id, $source);
         if (!$restore_job_id) {
             return new \WP_Error('restore_failed', 'Could not initiate restore job. The backup manifest or files may be missing on SharePoint storage.', [ 'status' => 500 ]);
         }
@@ -429,72 +442,67 @@ class RestController extends WP_REST_Controller
         global $wpdb;
         $table = $wpdb->prefix . 'spsync_items';
 
-        $drive_id = GraphClient::get_drive_id();
-        $root_folder_id = GraphClient::get_root_folder_id();
-
-        if (!$drive_id || !$root_folder_id) {
+        if (!GraphClient::get_drive_id() || !GraphClient::get_root_folder_id()) {
             return new WP_REST_Response([
                 'success' => false,
                 'message' => 'SharePoint credentials or root folder not configured.'
             ], 400);
         }
 
-        // Fetch all children items in the SharePoint root folder
-        $children_endpoint = sprintf('drives/%s/items/%s/children', $drive_id, $root_folder_id);
-        $children_data = GraphClient::request($children_endpoint);
-        if (!$children_data || !isset($children_data['value']) || !is_array($children_data['value'])) {
-            return new \WP_Error('verification_failed', 'SharePoint could not be listed. Existing backup statuses were not changed.', ['status' => 502]);
-        }
-        $pages = 0;
-        while (!empty($children_data['@odata.nextLink'])) {
-            $next = $children_data['@odata.nextLink'];
-            if (!is_string($next) || strpos($next, 'https://graph.microsoft.com/v1.0/') !== 0 || ++$pages > 100) {
-                return new \WP_Error('verification_failed', 'SharePoint returned an unsupported or incomplete listing.', ['status' => 502]);
-            }
-            $page = GraphClient::request(substr($next, strlen('https://graph.microsoft.com/v1.0/')));
-            if (!$page || !isset($page['value']) || !is_array($page['value'])) {
-                return new \WP_Error('verification_failed', 'SharePoint could not be fully listed. Existing statuses were not changed.', ['status' => 502]);
-            }
-            $children_data['value'] = array_merge($children_data['value'], $page['value']);
-            $children_data['@odata.nextLink'] = $page['@odata.nextLink'] ?? null;
+        // Only this site's folder (plus its own legacy root-level backups) is inspected.
+        $remote = RemoteInventory::backups();
+        if ($remote === false) {
+            return new \WP_Error('verification_failed', 'SharePoint could not be fully listed. Existing backup statuses were not changed.', ['status' => 502]);
         }
 
-        $remote_backups = [];
-        if ($children_data && !empty($children_data['value']) && is_array($children_data['value'])) {
-            foreach ($children_data['value'] as $item) {
-                if (isset($item['folder']) && !empty($item['name'])) {
-                    $remote_backups[] = $item['name'];
-                } elseif (!empty($item['name']) && (preg_match('/^spsync-backup-/', $item['name']) || preg_match('/\.(zip|sql|json)$/i', $item['name']))) {
-                    $nameWithoutExt = preg_replace('/\.(zip|sql|json|gz)$/i', '', $item['name']);
-                    $remote_backups[] = $nameWithoutExt;
-                }
-            }
-        }
-        $remote_backups = array_values(array_unique($remote_backups));
-
-        $backup_ids = [];
+        // Per-backup local view: how many components were uploaded and how many are already flagged missing.
+        $local = [];
         if ($wpdb->get_var("SHOW TABLES LIKE '$table'") !== null) {
-            $backup_ids = $wpdb->get_col("SELECT DISTINCT backup_id FROM $table WHERE backup_id IS NOT NULL AND backup_id != ''");
+            $rows = $wpdb->get_results(
+                "SELECT backup_id, COUNT(*) AS total, SUM(status = 'done') AS done, SUM(status = 'missing') AS missing FROM $table WHERE backup_id != '' GROUP BY backup_id",
+                ARRAY_A
+            );
+            foreach ((array) $rows as $row) {
+                $local[$row['backup_id']] = ['total' => (int) $row['total'], 'done' => (int) $row['done'], 'missing' => (int) $row['missing']];
+            }
         }
 
-        // All remote backups discovered on SharePoint are verified
-        $verified = $remote_backups;
-        $missing  = [];
-
-        foreach ($backup_ids as $backup_id) {
-            if (!in_array($backup_id, $remote_backups, true)) {
+        $verified = [];
+        $incomplete = [];
+        $missing = [];
+        $pending = [];
+        foreach ($remote as $name => $folder) {
+            $expected = isset($local[$name]) ? $local[$name]['total'] : null;
+            if ($expected !== null && $folder['child_count'] !== null && $folder['child_count'] < $expected) {
+                $incomplete[] = $name;
+            } else {
+                $verified[] = $name;
+            }
+        }
+        foreach ($local as $backup_id => $counts) {
+            // Still uploading (or failed before upload): absence on SharePoint is expected, not "missing".
+            if ($counts['done'] + $counts['missing'] < $counts['total']) {
+                $pending[] = $backup_id;
+                continue;
+            }
+            if (!isset($remote[$backup_id])) {
                 $missing[] = $backup_id;
-                // Update database items to status missing
-                $wpdb->update($table, [ 'status' => 'missing' ], [ 'backup_id' => $backup_id ]);
+                $wpdb->update($table, [ 'status' => 'missing' ], [ 'backup_id' => $backup_id, 'status' => 'done' ]);
+            } elseif ($counts['missing'] > 0) {
+                // The folder reappeared (e.g. restored from the SharePoint recycle bin).
+                $wpdb->update($table, [ 'status' => 'done' ], [ 'backup_id' => $backup_id, 'status' => 'missing' ]);
             }
         }
 
         return new WP_REST_Response([
-            'success'          => true,
-            'verified_backups' => $verified,
-            'missing_backups'  => $missing,
-            'remote_backups'   => $remote_backups,
-            'total_remote'     => count($remote_backups)
+            'success'            => true,
+            'site_folder'        => RemoteInventory::site_folder_name(),
+            'verified_backups'   => $verified,
+            'incomplete_backups' => $incomplete,
+            'missing_backups'    => $missing,
+            'pending_backups'    => $pending,
+            'remote_backups'     => array_keys($remote),
+            'total_remote'       => count($remote)
         ], 200);
     }
 

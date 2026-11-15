@@ -23,22 +23,23 @@ class RestoreManager
     /**
      * Start the restore process.
      *
-     * @param string $backup_id Backup folder identifier to restore.
+     * @param string      $backup_id     Backup folder identifier to restore.
+     * @param string|null $source_folder Another site's SharePoint folder name (cross-site migration).
      * @return string|false Restore Job ID or false on failure.
      */
-    public static function start_restore($backup_id)
+    public static function start_restore($backup_id, $source_folder = null)
     {
         if (!add_option('spsync_restore_start_lock', time(), '', false)) {
             return false;
         }
         try {
-            return self::prepare_restore($backup_id);
+            return self::prepare_restore($backup_id, $source_folder);
         } finally {
             delete_option('spsync_restore_start_lock');
         }
     }
 
-    private static function prepare_restore($backup_id)
+    private static function prepare_restore($backup_id, $source_folder = null)
     {
         global $wpdb;
 
@@ -58,6 +59,13 @@ class RestoreManager
         $restore_dir  = rtrim($upload_dir['basedir'], '/') . '/spsync-backups/restore';
         $rollback_dir = rtrim($upload_dir['basedir'], '/') . '/spsync-backups/rollback';
 
+        // Locate the backup before the (expensive) snapshot; never create remote folders while restoring.
+        $remote_folder_id = \SPSync\Storage\RemoteInventory::find_backup_folder($backup_id, $source_folder);
+        if (!$remote_folder_id) {
+            Logger::error("Restore Aborted: backup $backup_id was not found in SharePoint.", ["source_folder" => $source_folder]);
+            return false;
+        }
+
         // 1. Create emergency rollback snapshot first
         $snapshot_success = RestoreEngine::create_rollback_snapshot($rollback_dir);
         if (!$snapshot_success) {
@@ -67,7 +75,7 @@ class RestoreManager
 
         // 2. Download remote manifest file
         $manifest_local_path = $restore_dir . '/manifest.json';
-        $download_manifest = DownloadManager::download_file($backup_id, 'manifest.json', $manifest_local_path);
+        $download_manifest = DownloadManager::download_file($remote_folder_id, 'manifest.json', $manifest_local_path);
         
         if (!$download_manifest) {
             Logger::error('Restore Aborted: Could not download manifest.json from SharePoint.');
@@ -86,6 +94,7 @@ class RestoreManager
         // Register job active parameters
         Settings::set('restore_job_active', $restore_job_id);
         Settings::set('restore_backup_id', $backup_id);
+        Settings::set('restore_remote_folder_id', $remote_folder_id);
         Settings::set('restore_status', 'downloading');
 
         // Clear out any old restore queue table records
@@ -200,7 +209,7 @@ class RestoreManager
                 $local_dest = $restore_dir . '/' . $item->filename;
                 
                 $wpdb->update($table, [ 'status' => 'downloading' ], [ 'id' => $item->id ]);
-                $success = DownloadManager::download_file($backup_id, $item->filename, $local_dest, $expected_hash);
+                $success = DownloadManager::download_file(Settings::get('restore_remote_folder_id'), $item->filename, $local_dest, $expected_hash);
 
                 if ($success) {
                     $wpdb->update($table, [ 'downloaded' => 1, 'status' => 'waiting' ], [ 'id' => $item->id ]);

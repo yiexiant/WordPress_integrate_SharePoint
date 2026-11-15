@@ -112,46 +112,46 @@ class SharePointStorage
      */
     public static function get_or_create_remote_backup_folder($backup_id)
     {
-        $transient_key = 'spsync_remote_folder_id_' . $backup_id;
+        $drive_id = GraphClient::get_drive_id();
+        $site_folder_id = RemoteInventory::site_folder_id();
+
+        if (!$drive_id || !$site_folder_id) {
+            return false;
+        }
+
+        // Backups are created inside this site's own folder, never the shared root.
+        $transient_key = 'spsync_remote_folder_' . md5($site_folder_id . '|' . $backup_id);
         $cached_id = get_transient($transient_key);
         if ($cached_id) {
             return $cached_id;
         }
 
-        $drive_id = GraphClient::get_drive_id();
-        $root_folder_id = GraphClient::get_root_folder_id();
-
-        if (!$drive_id || !$root_folder_id) {
-            return false;
+        $endpoint = sprintf('drives/%s/items/%s/children', $drive_id, $site_folder_id);
+        $children = RemoteInventory::list_children($drive_id, $site_folder_id);
+        $existing = $children === false ? false : RemoteInventory::find_folder($children, $backup_id);
+        if ($existing) {
+            set_transient($transient_key, $existing, 3600); // Cache for 1 hour
+            return $existing;
         }
 
-        // Scan root backup folder children to see if subfolder is already present
-        $endpoint = sprintf('drives/%s/items/%s/children', $drive_id, $root_folder_id);
-        $data = GraphClient::request($endpoint);
-
-        if ($data && !empty($data['value'])) {
-            foreach ($data['value'] as $item) {
-                if (strcasecmp($item['name'], $backup_id) === 0 && isset($item['folder'])) {
-                    set_transient($transient_key, $item['id'], 3600); // Cache for 1 hour
-                    return $item['id'];
-                }
-            }
-        }
-
-        // Folder not found; create it
+        // Folder not found; create it. 'fail' (not 'replace') so an incomplete listing can never
+        // wipe an existing backup folder; on conflict, look the folder up again.
         $body = [
             'name'                              => $backup_id,
             'folder'                            => new \stdClass(),
-            '@microsoft.graph.conflictBehavior' => 'replace'
+            '@microsoft.graph.conflictBehavior' => 'fail'
         ];
 
         $create_data = GraphClient::request($endpoint, 'POST', $body);
-        if ($create_data && !empty($create_data['id'])) {
-            set_transient($transient_key, $create_data['id'], 3600);
-            return $create_data['id'];
+        $folder_id = is_array($create_data) && !empty($create_data['id']) ? $create_data['id'] : false;
+        if (!$folder_id) {
+            $children = RemoteInventory::list_children($drive_id, $site_folder_id);
+            $folder_id = $children === false ? false : RemoteInventory::find_folder($children, $backup_id);
         }
-
-        return false;
+        if ($folder_id) {
+            set_transient($transient_key, $folder_id, 3600);
+        }
+        return $folder_id;
     }
 
     /**

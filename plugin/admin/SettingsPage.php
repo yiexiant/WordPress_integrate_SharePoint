@@ -260,9 +260,22 @@ class SettingsPage
                 Settings::set('encrypt_secret', !empty($_POST['encrypt_secret']) ? '1' : '0');
                 Settings::set('client_secret', $new_secret);
 
+                $location_before = [Settings::get('site_url'), Settings::get('document_library'), Settings::get('root_folder')];
                 Settings::set('site_url', esc_url_raw($_POST['site_url']));
                 Settings::set('document_library', sanitize_text_field($_POST['document_library']));
                 Settings::set('root_folder', sanitize_text_field($_POST['root_folder']));
+                // Cached Graph IDs must follow a changed SharePoint location.
+                if ($location_before !== [Settings::get('site_url'), Settings::get('document_library'), Settings::get('root_folder')]) {
+                    Settings::delete('site_id');
+                    Settings::delete('drive_id');
+                    Settings::delete('root_folder_id');
+                }
+
+                $site_folder = \SPSync\Storage\RemoteInventory::sanitize_folder_name(wp_unslash($_POST['site_folder'] ?? ''));
+                if ($site_folder !== '' && $site_folder !== \SPSync\Storage\RemoteInventory::site_folder_name()) {
+                    Settings::set('site_folder', $site_folder);
+                    \SPSync\Storage\RemoteInventory::forget();
+                }
 
             }
 
@@ -800,6 +813,13 @@ class SettingsPage
                                 <th scope="row"><label for="root_folder"><?php esc_html_e('Root Backup Folder', 'schedule-backup-plugin'); ?></label></th>
                                 <td>
                                     <input name="root_folder" type="text" id="root_folder" value="<?php echo esc_attr($root_folder); ?>" class="regular-text" style="width: 100%; max-width: 480px; padding: 8px 12px;" />
+                                </td>
+                            </tr>
+                            <tr>
+                                <th scope="row"><label for="site_folder"><?php esc_html_e('Site Folder', 'schedule-backup-plugin'); ?></label></th>
+                                <td>
+                                    <input name="site_folder" type="text" id="site_folder" value="<?php echo esc_attr(\SPSync\Storage\RemoteInventory::site_folder_name()); ?>" class="regular-text" style="width: 100%; max-width: 480px; padding: 8px 12px;" />
+                                    <p class="description"><?php esc_html_e('This website\'s own folder inside the Root Backup Folder, so several websites can share one SharePoint library without seeing or pruning each other\'s backups. Letters, numbers, dots, dashes and underscores only. Renaming it later hides older backups from retention and verification.', 'schedule-backup-plugin'); ?></p>
                                 </td>
                             </tr>
                         </table>

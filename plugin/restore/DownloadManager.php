@@ -13,28 +13,19 @@ class DownloadManager
     /**
      * Downloads a file from SharePoint using Microsoft Graph and streams it directly to disk.
      *
-     * @param string $backup_id     The remote backup folder/job ID.
-     * @param string $filename      The remote filename to download.
-     * @param string $destination   The local destination file path.
-     * @param string $expected_hash Expected SHA-256 hash for verification.
+     * @param string $remote_folder_id SharePoint item ID of the backup folder (resolved by RemoteInventory).
+     * @param string $filename         The remote filename to download.
+     * @param string $destination      The local destination file path.
+     * @param string $expected_hash    Expected SHA-256 hash for verification.
      * @return bool True on success, false on failure.
      */
-    public static function download_file($backup_id, $filename, $destination, $expected_hash = '')
+    public static function download_file($remote_folder_id, $filename, $destination, $expected_hash = '')
     {
         Logger::info("Starting download of remote file: $filename");
 
         $drive_id = GraphClient::get_drive_id();
-        $root_folder_id = GraphClient::get_root_folder_id();
-
-        if (!$drive_id || !$root_folder_id) {
-            Logger::error('Download Failed: SharePoint Drive or Root Folder configuration is missing.');
-            return false;
-        }
-
-        // Resolve the remote backup subfolder ID
-        $remote_folder_id = \SPSync\Storage\SharePointStorage::get_or_create_remote_backup_folder($backup_id);
-        if (!$remote_folder_id) {
-            Logger::error('Download Failed: Could not resolve remote backup subfolder ID.', [ 'backup_id' => $backup_id ]);
+        if (!$drive_id || empty($remote_folder_id)) {
+            Logger::error('Download Failed: SharePoint drive or backup folder is unknown.');
             return false;
         }
 

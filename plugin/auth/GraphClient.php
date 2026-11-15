@@ -268,9 +268,20 @@ class GraphClient
             ];
         }
 
+        // 5. Discover or create this site's own folder inside the shared root
+        \SPSync\Storage\RemoteInventory::forget();
+        $site_folder_id = \SPSync\Storage\RemoteInventory::site_folder_id();
+        if (!$site_folder_id) {
+            return [
+                'success' => false,
+                'message' => 'Could not locate or create this site\'s folder inside the Root Backup Folder.'
+            ];
+        }
+
         return [
-            'success' => true,
-            'message' => 'Connection verified successfully! Authenticated with Microsoft Entra ID, reached SharePoint, and confirmed backup folder.'
+            'success'     => true,
+            'site_folder' => \SPSync\Storage\RemoteInventory::site_folder_name(),
+            'message'     => 'Connection verified successfully! Authenticated with Microsoft Entra ID, reached SharePoint, and confirmed this site\'s backup folder.'
         ];
     }
 }

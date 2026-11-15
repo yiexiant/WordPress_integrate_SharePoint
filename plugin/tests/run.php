@@ -82,12 +82,19 @@ namespace {
         public $items = [];
         public $fail = '';
         public $has_tables = false;
+        public $backup_ids = [];
+        public $results = [];
+        public $updates = [];
+        public $deletes = [];
+        public function get_results($sql, $mode = null) { return $this->results; }
+        public function update($table, $data, $where) { $this->updates[] = [$data, $where]; return 1; }
+        public function delete($table, $where, $formats = []) { $this->deletes[] = $where; return 1; }
         public function query($sql) {
             $this->queries[] = $sql;
             return $this->fail && strpos($sql, $this->fail) !== false ? false : 1;
         }
         public function insert($table, $row, $formats = []) { $this->items[] = $row; return 1; }
-        public function get_col($sql) { return ['wp_posts', 'wp_spsync_settings']; }
+        public function get_col($sql) { return strpos($sql, 'DISTINCT backup_id') !== false ? $this->backup_ids : ['wp_posts', 'wp_spsync_settings']; }
         public function get_row($sql, $mode = null) { return ['wp_posts', 'CREATE TABLE `wp_posts` (`id` int)']; }
         public function get_var($sql) { return strpos($sql, 'SHOW TABLES') === 0 ? ($this->has_tables ? 'wp_fixture' : null) : 0; }
     }
@@ -164,6 +171,8 @@ namespace {
     function wp_max_upload_size() { return 10485760; }
     function wp_unslash($value) { return $value; }
     function add_query_arg($values, $url) { return $url . '?' . http_build_query($values); }
+    function home_url($path = '') { return 'https://shop.example.test/store' . $path; }
+    function wp_parse_url($url, $component = -1) { return parse_url($url, $component); }
     function wp_safe_redirect($url) { throw new \RuntimeException('redirect:' . $url); }
 
     require dirname(__DIR__) . '/schedule-backup-plugin.php';
@@ -462,13 +471,74 @@ namespace {
         verify($failed['backup_id'] === $accepted->data['backup_id'] && $failed['status'] === 'failed', 'A worker failure before queue insertion is monitorable with the accepted ID.');
         $wpdb->has_tables = false;
         Settings::set('restore_status', 'completed');
+        // --- Per-site SharePoint isolation (1.4.0) ---
+        $inventory = 'SPSync\\Storage\\RemoteInventory';
+        verify($inventory::site_folder_name() === 'shop.example.test-store', 'Site folder defaults to the WordPress host and path.');
+        verify(Settings::get('site_folder') === 'shop.example.test-store', 'Derived site folder is persisted so a later URL change keeps the same folder.');
+        verify($inventory::sanitize_folder_name('../evil/..') === 'evil', 'Folder names cannot traverse.');
+        verify(strpos($inventory::sanitize_folder_name('spsync-backup-20260101-000000'), 'site-') === 0, 'A site folder can never look like a backup folder.');
+        $folder = function ($id, $name, $count = null) { return ['id' => $id, 'name' => $name, 'folder' => $count === null ? [] : ['childCount' => $count]]; };
+        $site_folder = $folder('site-1', 'shop.example.test-store');
+        Settings::set('site_folder_id', 'site-1');
+        Settings::set('site_folder_binding', 'test-root|shop.example.test-store');
+
         \SPSync\Auth\GraphClient::$responses = [false];
         verify(is_wp_error($controller->verify_remote_backups(null)), 'A failed SharePoint listing must not be interpreted as missing backups.');
-        \SPSync\Auth\GraphClient::$responses = [['value' => [['name' => 'spsync-backup-first', 'folder' => []]], '@odata.nextLink' => 'https://graph.microsoft.com/v1.0/next-page'], ['value' => [['name' => 'spsync-backup-second', 'folder' => []]]]];
+        $wpdb->backup_ids = ['spsync-backup-own-legacy'];
+        \SPSync\Auth\GraphClient::$responses = [
+            ['value' => [$folder('l1', 'spsync-backup-own-legacy'), $folder('l2', 'spsync-backup-other-site')], '@odata.nextLink' => 'https://graph.microsoft.com/v1.0/next-page'],
+            ['value' => [$site_folder, $folder('o1', 'other-site.example')]],
+            ['value' => [$folder('b1', 'spsync-backup-first'), $folder('b2', 'spsync-backup-second')]],
+        ];
         $verified = $controller->verify_remote_backups(null)->data;
-        verify(count($verified['remote_backups']) === 2, 'Remote verification follows Graph listing pages.');
+        verify($verified['remote_backups'] === ['spsync-backup-first', 'spsync-backup-own-legacy', 'spsync-backup-second'], 'Verification follows pagination and lists only this site\'s backups: ' . json_encode($verified['remote_backups']));
+        verify(!in_array('spsync-backup-other-site', $verified['remote_backups'], true), 'Another site\'s legacy root-level backup is never claimed.');
+        verify($verified['site_folder'] === 'shop.example.test-store', 'Verification reports the site folder.');
         \SPSync\Auth\GraphClient::$responses = [['value' => [], '@odata.nextLink' => 'https://untrusted.example/next-page']];
         verify(is_wp_error($controller->verify_remote_backups(null)), 'Do not follow Graph pagination to another host.');
+
+        // Missing / incomplete / still-uploading classification.
+        $wpdb->has_tables = true;
+        $wpdb->backup_ids = [];
+        $wpdb->updates = [];
+        $wpdb->results = [
+            ['backup_id' => 'spsync-backup-complete', 'total' => 3, 'done' => 3, 'missing' => 0],
+            ['backup_id' => 'spsync-backup-partial', 'total' => 3, 'done' => 3, 'missing' => 0],
+            ['backup_id' => 'spsync-backup-gone', 'total' => 2, 'done' => 2, 'missing' => 0],
+            ['backup_id' => 'spsync-backup-uploading', 'total' => 3, 'done' => 1, 'missing' => 0],
+            ['backup_id' => 'spsync-backup-back', 'total' => 2, 'done' => 0, 'missing' => 2],
+        ];
+        \SPSync\Auth\GraphClient::$responses = [
+            ['value' => [$site_folder]],
+            ['value' => [$folder('c', 'spsync-backup-complete', 3), $folder('p', 'spsync-backup-partial', 1), $folder('r', 'spsync-backup-back', 2)]],
+        ];
+        $verified = $controller->verify_remote_backups(null)->data;
+        verify($verified['missing_backups'] === ['spsync-backup-gone'], 'Only fully uploaded backups absent from SharePoint are missing: ' . json_encode($verified));
+        verify($verified['incomplete_backups'] === ['spsync-backup-partial'], 'A folder with fewer files than uploaded is incomplete.');
+        verify($verified['pending_backups'] === ['spsync-backup-uploading'], 'A backup still uploading is pending, not missing.');
+        verify(in_array([['status' => 'done'], ['backup_id' => 'spsync-backup-back', 'status' => 'missing']], $wpdb->updates, true), 'A reappearing backup is marked present again.');
+        verify(in_array([['status' => 'missing'], ['backup_id' => 'spsync-backup-gone', 'status' => 'done']], $wpdb->updates, true), 'A vanished backup is marked missing.');
+        $wpdb->has_tables = false;
+        $wpdb->results = [];
+
+        // The site folder is recreated when it no longer exists.
+        \SPSync\Auth\GraphClient::$responses = [['value' => []], ['id' => 'site-2'], ['value' => []]];
+        verify($controller->verify_remote_backups(null)->data['total_remote'] === 0 && Settings::get('site_folder_id') === 'site-2', 'A deleted site folder is recreated and re-cached.');
+        $site_folder = $folder('site-2', 'shop.example.test-store');
+
+        // Retention counts only this site's backups and keeps tracking when a delete fails.
+        Settings::set('retention_limit', '1');
+        $wpdb->deletes = [];
+        \SPSync\Auth\GraphClient::$responses = [
+            ['value' => [$site_folder, $folder('x', 'spsync-backup-20200101-000000')]],
+            ['value' => [$folder('a', 'spsync-backup-20260101-000000'), $folder('b', 'spsync-backup-20260102-000000'), $folder('c', 'spsync-backup-20260103-000000')]],
+            false,
+            null,
+        ];
+        verify(\SPSync\Backup\Retention::enforce() === 1, 'Retention deletes only confirmed folders.');
+        verify($wpdb->deletes === [['backup_id' => 'spsync-backup-20260102-000000']], 'Tracking rows are removed only after SharePoint confirms deletion: ' . json_encode($wpdb->deletes));
+        Settings::set('retention_limit', '30');
+        \SPSync\Auth\GraphClient::$responses = [];
 
         $source = staging(['wp-content/uploads/zip-restored.txt' => 'ZIP restoration fixture']);
         $staging_directories[] = $source;
