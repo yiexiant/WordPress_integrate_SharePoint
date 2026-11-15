@@ -30,6 +30,22 @@ class BackupLog extends Model
         return $this->belongsTo(Website::class);
     }
 
+    /**
+     * When the backup was taken. Backup IDs embed the WordPress-local timestamp
+     * (spsync-backup-YYYYMMDD-HHMMSS); fall back to when the dashboard first saw it.
+     */
+    public function getTakenAtAttribute(): \Illuminate\Support\Carbon
+    {
+        if (preg_match('/^spsync-backup-(\d{8}-\d{6})$/', (string) $this->backup_id, $matches)) {
+            $parsed = \Illuminate\Support\Carbon::createFromFormat('Ymd-His', $matches[1]);
+            if ($parsed !== false) {
+                return $parsed;
+            }
+        }
+
+        return $this->created_at ?? now();
+    }
+
     public function getFormattedSizeAttribute()
     {
         if (!$this->file_size) {

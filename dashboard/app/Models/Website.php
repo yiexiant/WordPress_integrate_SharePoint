@@ -70,6 +70,50 @@ class Website extends Model
         return $reference->lt($deadline);
     }
 
+    /**
+     * Overall health in plain language. Uses the eager-loaded latestBackup when present.
+     */
+    public function health(): \App\Support\SiteHealth
+    {
+        $health = fn (string $level, string $label, string $reason) => new \App\Support\SiteHealth($level, $label, $reason);
+        $lastBackup = $this->last_backup_at ? 'Last successful backup '.$this->last_backup_at->diffForHumans().'.' : 'No successful backup recorded yet.';
+
+        if ($this->last_sync_at === null && $this->status !== 'online') {
+            return $health('unknown', 'Not checked yet', 'Run "Check connection" to confirm the dashboard can reach this website.');
+        }
+        if ($this->status !== 'online') {
+            return $health('critical', 'Unreachable', $this->last_error ?: 'The dashboard could not reach the WordPress plugin.');
+        }
+        if ($this->sharepoint_status === 'error') {
+            return $health('critical', 'SharePoint error', 'WordPress could not sign in to SharePoint. Check the Microsoft Entra ID credentials in the plugin settings.');
+        }
+        if ($this->backup_overdue) {
+            return $health('critical', 'Backup overdue', $lastBackup.' This site is scheduled to back up '.($this->backup_frequency ?? 'automatically').'.');
+        }
+
+        $latest = $this->latestBackup;
+        if ($latest && in_array($latest->status, ['failed', 'incomplete', 'missing'], true)) {
+            $labels = ['failed' => 'Last backup failed', 'incomplete' => 'Backup incomplete', 'missing' => 'Backup missing'];
+            $reasons = [
+                'failed' => 'The most recent backup did not finish uploading to SharePoint. Check the WordPress logs.',
+                'incomplete' => 'The most recent backup is missing files on SharePoint and cannot be fully restored.',
+                'missing' => 'The most recent backup was deleted from SharePoint.',
+            ];
+
+            return $health('warning', $labels[$latest->status], $reasons[$latest->status]);
+        }
+
+        if (! $this->isMigration() && in_array($this->backup_frequency, [null, 'manual'], true)) {
+            return $health('warning', 'No automatic backups', $this->backup_frequency === null
+                ? 'The schedule is unknown. Update the plugin to 1.4.0+ and check the connection.'
+                : 'Automatic SharePoint backups are turned off in the WordPress plugin.');
+        }
+
+        $next = $this->next_backup_at ? ' Next backup '.$this->next_backup_at->diffForHumans().'.' : '';
+
+        return $health('ok', 'Healthy', $lastBackup.$next);
+    }
+
     public function backupLogs()
     {
         return $this->hasMany(BackupLog::class)->orderBy('id', 'desc');
