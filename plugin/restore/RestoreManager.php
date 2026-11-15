@@ -95,6 +95,7 @@ class RestoreManager
         Settings::set('restore_backup_id', $backup_id);
         Settings::set('restore_remote_folder_id', $remote_folder_id);
         Settings::set('restore_status', 'downloading');
+        Settings::delete('restore_error');
 
         // Clear out any old restore queue table records
         $table = $wpdb->prefix . 'spsync_restore_items';
@@ -341,6 +342,7 @@ class RestoreManager
 
         RestoreEngine::trigger_rollback($rollback_dir);
 
+        Settings::set('restore_error', $reason);
         Settings::set('restore_status', 'failed');
     }
 }

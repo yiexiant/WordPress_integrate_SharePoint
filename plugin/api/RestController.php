@@ -153,6 +153,8 @@ class RestController extends WP_REST_Controller
             'plugin'     => 'WordPress SharePoint Backup Plugin',
             'version'    => SPSYNC_VERSION,
             'database'   => $db_status,
+            'site_url'   => home_url(),
+            'site_folder'=> RemoteInventory::site_folder_name(),
             'timestamp'  => current_time('mysql', true)
         ], 200);
     }
@@ -238,10 +240,12 @@ class RestController extends WP_REST_Controller
         $restore = [
             'restore_job_id' => Settings::get('restore_job_active'),
             'status' => Settings::get('restore_status', 'completed'),
+            'backup_id' => Settings::get('restore_backup_id') ?: null,
+            'error' => Settings::get('restore_status') === 'failed' ? (Settings::get('restore_error') ?: 'Restoration failed. Check execution logs.') : null,
         ];
         $pending = get_option('spsync_api_backup_request');
         if (is_array($pending) && $pending['created_at'] > time() - 600 && !Settings::get('backup_running')) {
-            return new WP_REST_Response([
+            return $this->status_response([
                 'backup_id' => $pending['backup_id'], 'status' => 'queued', 'progress' => 0,
                 'total_files' => 0, 'uploaded_files' => 0, 'restore' => $restore,
             ], 200);
@@ -249,7 +253,7 @@ class RestController extends WP_REST_Controller
 
         // Check if queue table exists
         if ($wpdb->get_var("SHOW TABLES LIKE '$table'") === null) {
-            return new WP_REST_Response([
+            return $this->status_response([
                 'status'  => 'idle',
                 'message' => 'Queue database table does not exist.',
                 'restore' => $restore,
@@ -260,7 +264,7 @@ class RestController extends WP_REST_Controller
         $latest_backup_id = $wpdb->get_var("SELECT backup_id FROM $table ORDER BY id DESC LIMIT 1");
         $failed = get_option('spsync_api_backup_failed');
         if (is_array($failed) && (!$latest_backup_id || strcmp($failed['backup_id'], $latest_backup_id) >= 0)) {
-            return new WP_REST_Response([
+            return $this->status_response([
                 'backup_id' => $failed['backup_id'], 'status' => 'failed', 'progress' => 0,
                 'total_files' => 0, 'uploaded_files' => 0, 'restore' => $restore,
                 'message' => 'The backup worker failed. Check execution logs.',
@@ -268,7 +272,7 @@ class RestController extends WP_REST_Controller
         }
         
         if (empty($latest_backup_id)) {
-            return new WP_REST_Response([
+            return $this->status_response([
                 'status'  => 'idle',
                 'message' => 'No backups have been scheduled or run yet.',
                 'restore' => $restore,
@@ -320,10 +324,7 @@ class RestController extends WP_REST_Controller
         // Compute progress percent
         $progress = ($total_files > 0) ? round(($uploaded_files / $total_files) * 100) : 0;
 
-        $restore_job_id = Settings::get('restore_job_active');
-        $restore_status = Settings::get('restore_status', 'completed');
-
-        return new WP_REST_Response([
+        return $this->status_response([
             'backup_id'      => $latest_backup_id,
             'status'         => $status,
             'progress'       => $progress,
@@ -332,11 +333,39 @@ class RestController extends WP_REST_Controller
             'uploaded_files' => $uploaded_files,
             'failed_files'   => $failed_files,
             'pending_files'  => $pending_files,
-            'restore'        => [
-                'restore_job_id' => $restore_job_id,
-                'status'         => $restore_status
-            ]
+            'restore'        => $restore
         ], 200);
+    }
+
+    /**
+     * Every status response carries what an unattended monitor needs, whatever the job state.
+     */
+    private function status_response(array $data, $status = 200)
+    {
+        global $wpdb;
+        $table = $wpdb->prefix . 'spsync_items';
+        $last = null;
+        if ($wpdb->get_var("SHOW TABLES LIKE '$table'") !== null) {
+            $row = $wpdb->get_row(
+                "SELECT backup_id, MAX(created_at) AS created_at FROM $table GROUP BY backup_id HAVING SUM(status != 'done') = 0 ORDER BY backup_id DESC LIMIT 1",
+                ARRAY_A
+            );
+            if (is_array($row) && !empty($row['backup_id'])) {
+                $last = [
+                    'backup_id'  => $row['backup_id'],
+                    'created_at' => empty($row['created_at']) ? null : gmdate('c', strtotime($row['created_at'] . ' UTC')),
+                ];
+            }
+        }
+        $next = wp_next_scheduled(\SPSync\Scheduler\Scheduler::EVENT_HOOK);
+        $data['last_successful_backup'] = $last;
+        $data['schedule'] = [
+            'frequency' => Settings::get('backup_frequency', 'manual'),
+            'next_run'  => $next ? gmdate('c', $next) : null,
+        ];
+        $data['site_folder'] = RemoteInventory::site_folder_name();
+        $data['plugin_version'] = SPSYNC_VERSION;
+        return new WP_REST_Response($data, $status);
     }
 
     /**

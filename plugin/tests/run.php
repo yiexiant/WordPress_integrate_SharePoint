@@ -613,6 +613,17 @@ namespace {
         ob_start(); \SPSync\Admin\SettingsPage::render_settings_page(); $html = ob_get_clean();
         verify(strpos($html, 'name="backup_zip"') !== false && strpos($html, 'Upload, Verify &amp; Restore') !== false, 'Manual Restore offers ZIP input and a single upload/verify/restore button.');
         verify(strpos($html, 'name="confirm_restore" value="1" required') !== false, 'Initial form includes a required overwrite confirmation.');
+        // Status responses carry monitoring data and surface restore errors.
+        Settings::set('restore_status', 'failed');
+        Settings::set('restore_error', 'Checksum mismatch');
+        Settings::set('backup_frequency', 'daily');
+        $status = $controller->get_backup_status(null)->data;
+        verify(array_key_exists('last_successful_backup', $status) && $status['schedule']['frequency'] === 'daily' && $status['site_folder'] === 'shop.example.test-store', 'Status includes last successful backup, schedule and site folder: ' . json_encode($status));
+        verify($status['restore']['error'] === 'Checksum mismatch', 'Status exposes the restore failure reason.');
+        Settings::set('restore_status', 'completed');
+        Settings::delete('restore_error');
+        verify($controller->get_backup_status(null)->data['restore']['error'] === null, 'No restore error is reported for a healthy site.');
+
         // Local SharePoint staging lives under an unguessable, protected directory.
         $private_root = \SPSync\Helpers\LocalPaths::private_root();
         verify(preg_match('#/spsync-backups/[a-f0-9]{32}\z#', $private_root) === 1, 'Local backups are staged under a random token directory.');
