@@ -543,6 +543,15 @@ namespace {
         ob_start(); \SPSync\Admin\SettingsPage::render_settings_page(); $html = ob_get_clean();
         verify(strpos($html, 'name="backup_zip"') !== false && strpos($html, 'Upload, Verify &amp; Restore') !== false, 'Manual Restore offers ZIP input and a single upload/verify/restore button.');
         verify(strpos($html, 'name="confirm_restore" value="1" required') !== false, 'Initial form includes a required overwrite confirmation.');
+        // Remote (SharePoint) manifests are validated before their filenames become local paths.
+        $hash = str_repeat('a', 64);
+        $manifest_error = ['SPSync\\Restore\\RestoreManager', 'manifest_error'];
+        verify($manifest_error(['backup_id' => 'spsync-backup-x', 'parts' => [['filename' => 'database.sql', 'checksum' => $hash]]], 'spsync-backup-x') === '', 'Accept a well-formed remote manifest.');
+        verify($manifest_error(['parts' => [['filename' => '../../wp-config.php', 'checksum' => $hash]]], 'spsync-backup-x') !== '', 'Reject traversal filenames in remote manifests.');
+        verify($manifest_error(['parts' => [['filename' => 'backup_part001.zip', 'checksum' => '']]], 'spsync-backup-x') !== '', 'Reject remote parts without a verifiable checksum.');
+        verify($manifest_error(['parts' => [['filename' => 'database.sql', 'checksum' => $hash], ['filename' => 'database.sql', 'checksum' => $hash]]], 'spsync-backup-x') !== '', 'Reject duplicate remote parts.');
+        verify($manifest_error(['backup_id' => 'spsync-backup-other', 'parts' => [['filename' => 'database.sql', 'checksum' => $hash]]], 'spsync-backup-x') !== '', 'Reject a manifest from another backup.');
+
         // URL migration binds the search value instead of concatenating it into SQL.
         $real_wpdb = $wpdb;
         $wpdb = new class {

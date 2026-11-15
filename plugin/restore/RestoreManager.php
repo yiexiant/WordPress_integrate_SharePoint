@@ -77,8 +77,9 @@ class RestoreManager
         // 3. Read enqueued parts from manifest
         $manifest_content = file_get_contents($manifest_local_path);
         $manifest = json_decode($manifest_content, true);
-        if (!$manifest || empty($manifest['parts'])) {
-            Logger::error('Restore Aborted: manifest.json is invalid or contains no parts.');
+        $manifest_error = self::manifest_error($manifest, $backup_id);
+        if ($manifest_error !== '') {
+            Logger::error('Restore Aborted: ' . $manifest_error);
             return false;
         }
 
@@ -115,6 +116,32 @@ class RestoreManager
         self::trigger_worker();
 
         return $restore_job_id;
+    }
+
+    /**
+     * Remote manifests decide local file paths, so hold them to the same rules as uploaded backups.
+     *
+     * @return string Empty when the manifest is safe to use.
+     */
+    public static function manifest_error($manifest, $backup_id)
+    {
+        if (!is_array($manifest) || empty($manifest['parts']) || !is_array($manifest['parts'])) {
+            return 'manifest.json is invalid or contains no parts.';
+        }
+        if (isset($manifest['backup_id']) && $manifest['backup_id'] !== $backup_id) {
+            return 'manifest.json belongs to a different backup.';
+        }
+        $seen = [];
+        foreach ($manifest['parts'] as $part) {
+            if (!is_array($part) || !isset($part['filename'], $part['checksum']) ||
+                !LocalBackup::allowed_filename($part['filename']) || $part['filename'] === 'manifest.json' ||
+                isset($seen[$part['filename']]) ||
+                !is_string($part['checksum']) || !preg_match('/\A[a-f0-9]{64}\z/iD', $part['checksum'])) {
+                return 'manifest.json lists an unsafe, duplicate or unverifiable backup part.';
+            }
+            $seen[$part['filename']] = true;
+        }
+        return '';
     }
 
     /**
