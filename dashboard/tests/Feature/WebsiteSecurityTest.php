@@ -82,6 +82,6 @@ class WebsiteSecurityTest extends TestCase
         app(WordPressApiClient::class)->checkHealth($website);
 
         Http::assertSent(fn ($request) => $request->hasHeader('X-SPSYNC-KEY', 'plain-secret')
-            && $request->url() === 'https://93.184.216.34/wp-json/spsync/v1/health');
+            && $request->url() === 'https://93.184.216.34/?rest_route=/spsync/v1/health');
     }
 }

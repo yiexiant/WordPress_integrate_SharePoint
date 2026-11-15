@@ -78,7 +78,7 @@ class Website extends Model
         $health = fn (string $level, string $label, string $reason) => new \App\Support\SiteHealth($level, $label, $reason);
         $lastBackup = $this->last_backup_at ? 'Last successful backup '.$this->last_backup_at->diffForHumans().'.' : 'No successful backup recorded yet.';
 
-        if ($this->last_sync_at === null && $this->status !== 'online') {
+        if ($this->last_sync_at === null && $this->last_error === null && $this->status !== 'online') {
             return $health('unknown', 'Not checked yet', 'Run "Check connection" to confirm the dashboard can reach this website.');
         }
         if ($this->status !== 'online') {

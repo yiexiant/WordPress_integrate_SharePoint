@@ -40,7 +40,29 @@ class WordPressApiClient
     {
         $baseUrl = rtrim($website->url, '/');
         SiteUrlGuard::assertAllowed($baseUrl);
-        return $baseUrl . '/wp-json/spsync/v1/' . ltrim($path, '/');
+
+        // ?rest_route= works with every permalink setting. /wp-json/ only works with "pretty"
+        // permalinks, so it returns 404 on sites left on WordPress's default "Plain" setting.
+        [$route, $query] = array_pad(explode('?', ltrim($path, '/'), 2), 2, '');
+
+        return $baseUrl.'/?rest_route=/spsync/v1/'.$route.($query !== '' ? '&'.$query : '');
+    }
+
+    /**
+     * Turn a failed plugin response into something an operator can act on.
+     */
+    protected function describeFailure(\Illuminate\Http\Client\Response $response): string
+    {
+        $status = $response->status();
+        $detail = $response->json('message');
+
+        return match (true) {
+            $status === 404 => 'The SharePoint Backup plugin did not answer at this address (HTTP 404). Check the website address and that the plugin is installed and activated in WordPress.',
+            in_array($status, [401, 403], true) => 'The plugin rejected the API key (HTTP '.$status.'). Copy the current Secret API Key from the plugin\'s Overview tab and paste it under Edit.',
+            $status >= 300 && $status < 400 => 'The website redirected to '.($response->header('Location') ?: 'another address').' (HTTP '.$status.'). Use that final address under Edit.',
+            $status >= 500 => 'WordPress had a server error (HTTP '.$status.').'.($detail ? ' '.$detail : ' Check the site\'s PHP error log.'),
+            default => 'WordPress responded with HTTP '.$status.($detail ? ': '.$detail : '.'),
+        };
     }
 
     /**
@@ -57,6 +79,7 @@ class WordPressApiClient
                 $website->update([
                     'status' => 'online',
                     'last_sync_at' => now(),
+                    'last_error' => null,
                 ]);
                 return [
                     'success' => true,
@@ -66,19 +89,20 @@ class WordPressApiClient
                 ];
             }
 
-            $errMsg = $response->json('message') ?? 'HTTP ' . $response->status();
-            $website->update(['status' => 'error']);
+            $message = $this->describeFailure($response);
+            $website->update(['status' => 'error', 'last_error' => $message]);
             return [
                 'success' => false,
                 'status'  => 'error',
-                'message' => 'WordPress responded with error: ' . $errMsg,
+                'message' => $message,
             ];
         } catch (Exception $e) {
-            $website->update(['status' => 'offline']);
+            $message = 'Could not connect to WordPress: '.$e->getMessage();
+            $website->update(['status' => 'offline', 'last_error' => $message]);
             return [
                 'success' => false,
                 'status'  => 'offline',
-                'message' => 'Could not connect to WordPress: ' . $e->getMessage(),
+                'message' => $message,
             ];
         }
     }

@@ -152,7 +152,7 @@ class BackupMonitoringTest extends TestCase
             'source_website_id' => $source->id,
         ])->assertSessionHas('success');
 
-        Http::assertSent(fn ($request) => $request->url() === 'https://staging.test/wp-json/spsync/v1/restore/start'
+        Http::assertSent(fn ($request) => $request->url() === 'https://staging.test/?rest_route=/spsync/v1/restore/start'
             && $request['source_site_folder'] === 'shop.test'
             && $request['backup_id'] === 'spsync-backup-20261114-020000');
     }

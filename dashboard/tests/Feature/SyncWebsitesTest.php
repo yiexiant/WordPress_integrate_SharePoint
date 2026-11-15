@@ -24,8 +24,8 @@ class SyncWebsitesTest extends TestCase
     private function fakeSite(string $host, string $lastBackup, string $frequency = 'daily'): void
     {
         Http::fake([
-            "https://{$host}/wp-json/spsync/v1/health" => Http::response(['status' => 'healthy']),
-            "https://{$host}/wp-json/spsync/v1/backup/status" => Http::response([
+            "https://{$host}/?rest_route=/spsync/v1/health" => Http::response(['status' => 'healthy']),
+            "https://{$host}/?rest_route=/spsync/v1/backup/status" => Http::response([
                 'status' => 'idle',
                 'restore' => ['restore_job_id' => null, 'status' => 'completed'],
                 'last_successful_backup' => ['backup_id' => 'spsync-backup-x', 'created_at' => $lastBackup],
