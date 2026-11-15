@@ -5,6 +5,8 @@ Laravel 13 (PHP 8.3) dashboard for monitoring and operating every WordPress site
 The dashboard never talks to SharePoint itself. It calls each site's `wp-json/spsync/v1/*` API with that
 site's plugin key (`X-SPSYNC-KEY`).
 
+> **Guides:** [GETTING_STARTED.md](GETTING_STARTED.md) (run it on your PC with Laragon) · [DEPLOYMENT.md](DEPLOYMENT.md) (production server, HTTPS, scheduler, updates, backups).
+
 ## Setup
 
 ```sh
