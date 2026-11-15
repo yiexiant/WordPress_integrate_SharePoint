@@ -42,6 +42,8 @@ return [
     'wordpress' => [
         'verify_tls' => (bool) env('WP_VERIFY_TLS', env('APP_ENV') !== 'local'),
         'allow_private_hosts' => (bool) env('WP_ALLOW_PRIVATE_HOSTS', env('APP_ENV') === 'local'),
+        // Hours past a site's schedule before its newest backup counts as overdue.
+        'overdue_grace_hours' => (int) env('WP_BACKUP_OVERDUE_GRACE_HOURS', 6),
     ],
 
 ];

@@ -19,6 +19,12 @@ class Website extends Model
         'last_backup_at',
         'system_info',
         'sharepoint_status',
+        'site_folder',
+        'plugin_version',
+        'backup_frequency',
+        'next_backup_at',
+        'backup_overdue',
+        'last_error',
     ];
 
     /** The plugin API key grants full remote control of the site; never serialize it. */
@@ -30,8 +36,39 @@ class Website extends Model
         'api_key' => 'encrypted',
         'last_sync_at' => 'datetime',
         'last_backup_at' => 'datetime',
+        'next_backup_at' => 'datetime',
+        'backup_overdue' => 'boolean',
         'system_info' => 'array',
     ];
+
+    /** Expected gap between automatic backups, or null when the site has no automatic schedule. */
+    public function expectedBackupInterval(): ?\Carbon\CarbonInterval
+    {
+        return match ($this->backup_frequency) {
+            'daily'   => \Carbon\CarbonInterval::day(),
+            'weekly'  => \Carbon\CarbonInterval::week(),
+            'monthly' => \Carbon\CarbonInterval::days(31),
+            default   => null,
+        };
+    }
+
+    /**
+     * An automatically scheduled site whose newest successful SharePoint backup is older than its
+     * interval plus a grace period. A site that never completed one is measured from registration.
+     */
+    public function isBackupOverdue(?\Carbon\CarbonInterface $now = null): bool
+    {
+        $interval = $this->expectedBackupInterval();
+        $reference = $this->last_backup_at ?? $this->created_at;
+        if ($interval === null || $reference === null) {
+            return false;
+        }
+
+        $now ??= now();
+        $deadline = $now->copy()->sub($interval)->subHours((int) config('services.wordpress.overdue_grace_hours', 6));
+
+        return $reference->lt($deadline);
+    }
 
     public function backupLogs()
     {

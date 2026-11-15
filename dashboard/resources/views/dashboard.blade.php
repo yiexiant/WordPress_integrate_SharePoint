@@ -4,6 +4,21 @@
 
 @section('content')
 <div class="space-y-8">
+    @if($overdueWebsites->isNotEmpty())
+        <!-- Backup freshness alert (filled by the scheduled sites:sync monitor) -->
+        <div class="rounded-xl bg-red-50 border border-red-200 p-4 text-red-900 shadow-sm">
+            <div class="text-sm font-bold">{{ $overdueWebsites->count() }} website(s) have no recent successful SharePoint backup</div>
+            <ul class="mt-2 text-xs space-y-1">
+                @foreach($overdueWebsites as $overdue)
+                    <li>
+                        <a href="{{ route('websites.show', $overdue) }}" class="font-semibold underline">{{ $overdue->name }}</a>
+                        · {{ ucfirst($overdue->backup_frequency) }} schedule · newest backup {{ $overdue->last_backup_at?->diffForHumans() ?? 'never' }}
+                    </li>
+                @endforeach
+            </ul>
+        </div>
+    @endif
+
     <!-- Top Hero Section -->
     <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>

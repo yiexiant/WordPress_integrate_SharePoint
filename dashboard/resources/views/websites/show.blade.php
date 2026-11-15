@@ -46,7 +46,32 @@
                         SharePoint Unchecked
                     </span>
                 @endif
+
+                <!-- Backup freshness (plugin 1.4.0+) -->
+                @if($website->backup_overdue)
+                    <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-red-600 text-white" title="Newest successful backup: {{ $website->last_backup_at?->diffForHumans() ?? 'never' }}">
+                        Backup Overdue
+                    </span>
+                @elseif($website->backup_frequency && $website->backup_frequency !== 'manual')
+                    <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-800 border border-slate-200">
+                        {{ ucfirst($website->backup_frequency) }} backups{{ $website->next_backup_at ? ' · next '.$website->next_backup_at->diffForHumans() : '' }}
+                    </span>
+                @elseif($website->backup_frequency === 'manual')
+                    <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 border border-slate-200" title="Automatic SharePoint backups are turned off in WordPress.">
+                        No automatic schedule
+                    </span>
+                @endif
             </div>
+            @if($website->site_folder || $website->last_error)
+                <div class="mt-2 text-xs text-slate-500 space-y-0.5">
+                    @if($website->site_folder)
+                        <div>SharePoint site folder: <code class="font-mono text-slate-700">{{ $website->site_folder }}</code>@if($website->plugin_version) · plugin v{{ $website->plugin_version }}@endif</div>
+                    @endif
+                    @if($website->last_error)
+                        <div class="text-red-700">Last sync error: {{ $website->last_error }}</div>
+                    @endif
+                </div>
+            @endif
 
             <div class="flex flex-wrap items-center gap-4 mt-2 text-xs text-slate-500">
                 <a href="{{ $website->url }}" target="_blank" class="text-slate-700 hover:text-red-600 font-mono font-medium underline">
@@ -185,6 +210,42 @@
                     </p>
                 </div>
             </div>
+        </div>
+
+        <!-- Cross-site restore: pull another website's SharePoint backup into this one -->
+        <div class="p-6 sm:p-8 border-b border-slate-200 space-y-3">
+            <h4 class="text-xs font-bold uppercase tracking-wider text-slate-900">Restore a backup from another website</h4>
+            <p class="text-xs text-slate-600 leading-relaxed">
+                Each website keeps its backups in its own SharePoint site folder. To migrate, pick a completed backup of the source website.
+                This website must use the same SharePoint library and root folder. Run the URL update below afterwards.
+            </p>
+            @if($migrationSources->isEmpty())
+                <p class="text-xs text-slate-500 italic">No other website has reported a SharePoint site folder with completed backups yet (plugin 1.4.0+ and a connection test are required).</p>
+            @else
+                <form method="POST" action="{{ route('websites.trigger-restore', $website) }}" class="flex flex-col sm:flex-row gap-3 sm:items-end"
+                      onsubmit="return confirm('Overwrite {{ e($website->name) }} with the selected backup from another website? A rollback snapshot is taken first.');">
+                    @csrf
+                    <input type="hidden" name="source_website_id" id="migration-source-id" value="">
+                    <input type="hidden" name="backup_id" id="migration-backup-id" value="">
+                    <label class="flex-1 text-xs font-semibold text-slate-700">
+                        Source backup
+                        <select required class="mt-1 w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono"
+                                onchange="const o=this.selectedOptions[0]; document.getElementById('migration-source-id').value=o.dataset.source||''; document.getElementById('migration-backup-id').value=o.dataset.backup||'';">
+                            <option value="">Choose a backup…</option>
+                            @foreach($migrationSources as $source)
+                                <optgroup label="{{ $source->name }} ({{ $source->site_folder }})">
+                                    @foreach($source->backupLogs as $sourceBackup)
+                                        <option value="{{ $source->id }}:{{ $sourceBackup->backup_id }}" data-source="{{ $source->id }}" data-backup="{{ $sourceBackup->backup_id }}">{{ $sourceBackup->backup_id }}</option>
+                                    @endforeach
+                                </optgroup>
+                            @endforeach
+                        </select>
+                    </label>
+                    <button type="submit" class="px-4 py-2 rounded-lg text-xs font-bold text-white bg-red-600 hover:bg-red-700 shadow-sm transition">
+                        Restore into {{ $website->name }}
+                    </button>
+                </form>
+            @endif
         </div>
 
         <!-- Database URL Update Form Section -->
@@ -424,6 +485,10 @@
                                         <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-red-50 text-red-700 border border-red-200">
                                             Upload Failed
                                         </span>
+                                    @elseif($backup->status === 'incomplete')
+                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-red-50 text-red-700 border border-red-200" title="The SharePoint folder has fewer files than were uploaded. This backup cannot be fully restored.">
+                                            Incomplete on SharePoint
+                                        </span>
                                     @else
                                         <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-700">
                                             {{ ucfirst($backup->status) }}
@@ -510,6 +575,9 @@
                                         <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-red-50 text-red-700 border border-red-200" title="{{ $restore->error_message }}">
                                             Rollback Triggered
                                         </span>
+                                        @if($restore->error_message)
+                                            <div class="mt-1 text-[11px] text-red-700 max-w-xs">{{ $restore->error_message }}</div>
+                                        @endif
                                     @else
                                         <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-300">
                                             {{ ucfirst(str_replace('_', ' ', $restore->status)) }}

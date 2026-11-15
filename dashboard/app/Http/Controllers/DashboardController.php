@@ -26,7 +26,10 @@ class DashboardController extends Controller
             ->count();
 
         $activeJobsCount = BackupLog::whereIn('status', ['queued', 'uploading'])->count()
-            + RestoreLog::whereIn('status', ['pending', 'downloading', 'extracting', 'restoring_database'])->count();
+            + RestoreLog::whereIn('status', ['pending', 'downloading', 'extracting', 'restoring_database', 'cleanup'])->count();
+
+        // Automatically scheduled sites whose newest SharePoint backup is older than expected.
+        $overdueWebsites = Website::where('backup_overdue', true)->orderBy('name')->get();
 
         $totalRestores = RestoreLog::count();
         $successfulRestores = RestoreLog::where('status', 'completed')->count();
@@ -56,6 +59,7 @@ class DashboardController extends Controller
             'successfulBackups',
             'removedFromSharePoint',
             'activeJobsCount',
+            'overdueWebsites',
             'totalRestores',
             'successfulRestores',
             'websites',

@@ -7,6 +7,7 @@ use App\Models\BackupLog;
 use App\Models\RestoreLog;
 use App\Models\ActivityLog;
 use App\Support\SiteUrlGuard;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Exception;
@@ -134,6 +135,8 @@ class WordPressApiClient
                 $data = $response->json();
                 $website->update([
                     'system_info'  => $data,
+                    'site_folder'  => $data['site_folder'] ?? $website->site_folder,
+                    'plugin_version' => $data['plugin_version'] ?? $website->plugin_version,
                     'status'       => 'online',
                     'last_sync_at' => now(),
                 ]);
@@ -164,63 +167,117 @@ class WordPressApiClient
             $url = $this->endpoint($website, 'backup/status');
             $response = $this->request($website, 10)->get($url);
 
-            if ($response->successful()) {
-                $data = $response->json();
+            if (! $response->successful()) {
+                $message = 'Failed to fetch backup status (HTTP '.$response->status().').';
+                $website->update(['last_error' => $message]);
 
-                if (!empty($data['backup_id'])) {
-                    // Update or create BackupLog
-                    $backupLog = BackupLog::firstOrNew([
-                        'website_id' => $website->id,
-                        'backup_id'  => $data['backup_id'],
-                    ]);
-
-                    $backupLog->status = $data['status'] ?? 'queued';
-                    $backupLog->total_files = $data['total_files'] ?? 0;
-                    $backupLog->uploaded_files = $data['uploaded_files'] ?? 0;
-                    $backupLog->is_removed_from_sharepoint = ($backupLog->status === 'missing');
-                    $backupLog->save();
-
-                    if ($backupLog->status === 'completed') {
-                        $website->update(['last_backup_at' => now()]);
-                    }
-                }
-
-                // Update RestoreLog if restore job information is returned
-                if (!empty($data['restore']['restore_job_id'])) {
-                    $restoreLog = RestoreLog::where('website_id', $website->id)
-                        ->where('restore_job_id', $data['restore']['restore_job_id'])
-                        ->first();
-
-                    if ($restoreLog && !in_array($restoreLog->status, ['completed', 'failed'], true)) {
-                        $newStatus = $data['restore']['status'] ?? $restoreLog->status;
-                        $restoreLog->status = $newStatus;
-
-                        if (in_array($newStatus, ['completed', 'failed'], true)) {
-                            $restoreLog->completed_at = now();
-                            if ($restoreLog->started_at) {
-                                $restoreLog->duration_seconds = $restoreLog->started_at->diffInSeconds($restoreLog->completed_at);
-                            }
-                        }
-                        $restoreLog->save();
-                    }
-                }
-
-                return [
-                    'success' => true,
-                    'data'    => $data,
-                ];
+                return ['success' => false, 'message' => $message];
             }
 
+            $data = $response->json() ?? [];
+
+            if (! empty($data['backup_id'])) {
+                $backupLog = BackupLog::firstOrNew([
+                    'website_id' => $website->id,
+                    'backup_id'  => $data['backup_id'],
+                ]);
+
+                $backupLog->status = $data['status'] ?? 'queued';
+                $backupLog->total_files = $data['total_files'] ?? 0;
+                $backupLog->uploaded_files = $data['uploaded_files'] ?? 0;
+                $backupLog->is_removed_from_sharepoint = ($backupLog->status === 'missing');
+                $backupLog->save();
+            }
+
+            $this->syncMonitoringFields($website, $data);
+            $this->syncRestore($website, $data['restore'] ?? []);
+
             return [
-                'success' => false,
-                'message' => 'Failed to fetch backup status.',
+                'success' => true,
+                'data'    => $data,
             ];
         } catch (Exception $e) {
+            $website->update(['last_error' => $e->getMessage()]);
+
             return [
                 'success' => false,
                 'message' => $e->getMessage(),
             ];
         }
+    }
+
+    /**
+     * Store plugin-reported schedule data. last_backup_at comes from the plugin's newest fully
+     * uploaded backup, not from when the dashboard happened to poll.
+     */
+    protected function syncMonitoringFields(Website $website, array $data): void
+    {
+        $updates = ['last_error' => null, 'last_sync_at' => now()];
+
+        if (array_key_exists('last_successful_backup', $data)) {
+            // Plugin 1.4.0+
+            $updates['last_backup_at'] = ! empty($data['last_successful_backup']['created_at'])
+                ? Carbon::parse($data['last_successful_backup']['created_at'])
+                : null;
+        } elseif (($data['status'] ?? null) === 'completed') {
+            // Older plugins: best available signal is the time a completed job was observed.
+            $updates['last_backup_at'] = $website->last_backup_at ?? now();
+        }
+
+        if (isset($data['schedule']) && is_array($data['schedule'])) {
+            $updates['backup_frequency'] = $data['schedule']['frequency'] ?? null;
+            $updates['next_backup_at'] = ! empty($data['schedule']['next_run']) ? Carbon::parse($data['schedule']['next_run']) : null;
+        }
+        if (! empty($data['site_folder'])) {
+            $updates['site_folder'] = $data['site_folder'];
+        }
+        if (! empty($data['plugin_version'])) {
+            $updates['plugin_version'] = $data['plugin_version'];
+        }
+
+        $website->fill($updates);
+        $website->backup_overdue = $website->isBackupOverdue();
+        $website->save();
+    }
+
+    /**
+     * Track the plugin's current restore job, including restores started from WordPress admin.
+     */
+    protected function syncRestore(Website $website, array $restore): void
+    {
+        if (empty($restore['restore_job_id'])) {
+            return;
+        }
+
+        $newStatus = $restore['status'] ?? 'pending';
+        $terminal = in_array($newStatus, ['completed', 'failed'], true);
+
+        $restoreLog = RestoreLog::firstOrNew([
+            'website_id'     => $website->id,
+            'restore_job_id' => $restore['restore_job_id'],
+        ]);
+
+        if (! $restoreLog->exists) {
+            if ($terminal) {
+                return; // A finished job we never saw start: nothing useful to time.
+            }
+            $restoreLog->backup_id = $restore['backup_id'] ?? 'uploaded backup';
+            $restoreLog->started_at = now();
+        } elseif (in_array($restoreLog->status, ['completed', 'failed'], true)) {
+            return;
+        }
+
+        $restoreLog->status = $newStatus;
+        if ($terminal) {
+            $restoreLog->completed_at = now();
+            if ($restoreLog->started_at) {
+                $restoreLog->duration_seconds = (int) $restoreLog->started_at->diffInSeconds($restoreLog->completed_at);
+            }
+        }
+        if ($newStatus === 'failed') {
+            $restoreLog->error_message = $restore['error'] ?? 'Restoration failed. Check the WordPress execution logs.';
+        }
+        $restoreLog->save();
     }
 
     /**
@@ -275,13 +332,23 @@ class WordPressApiClient
     /**
      * Trigger a restoration on WordPress.
      */
-    public function triggerRestore(Website $website, string $backupId): array
+    public function triggerRestore(Website $website, string $backupId, ?Website $source = null): array
     {
         try {
+            $payload = ['backup_id' => $backupId];
+            if ($source !== null && $source->isNot($website)) {
+                if (empty($source->site_folder)) {
+                    return [
+                        'success' => false,
+                        'message' => "{$source->name} has not reported its SharePoint site folder yet. Run a connection test on it first (plugin 1.4.0+ required).",
+                    ];
+                }
+                $payload['source_site_folder'] = $source->site_folder;
+            }
+
             $url = $this->endpoint($website, 'restore/start');
-            $response = $this->request($website, 20)->post($url, [
-                'backup_id' => $backupId,
-            ]);
+            // The plugin takes a rollback snapshot before it answers, which can take minutes.
+            $response = $this->request($website, 300)->post($url, $payload);
 
             if ($response->successful()) {
                 $data = $response->json();
@@ -334,11 +401,16 @@ class WordPressApiClient
 
             if ($response->successful()) {
                 $data = $response->json();
-                $verified = $data['verified_backups'] ?? [];
-                $missing  = $data['missing_backups'] ?? [];
-                $remote   = $data['remote_backups'] ?? [];
+                $verified   = $data['verified_backups'] ?? [];
+                $missing    = $data['missing_backups'] ?? [];
+                $incomplete = $data['incomplete_backups'] ?? [];
+                $remote     = $data['remote_backups'] ?? [];
 
-                $allRemoteVerified = array_values(array_unique(array_merge($verified, $remote)));
+                // Plugin 1.4.0+ lists only this site's folder; incomplete folders are not "completed".
+                $allRemoteVerified = array_values(array_diff(array_unique(array_merge($verified, $remote)), $incomplete));
+                if (! empty($data['site_folder'])) {
+                    $website->update(['site_folder' => $data['site_folder']]);
+                }
 
                 // Auto-discover and register remote backups into Dashboard BackupLog
                 foreach ($allRemoteVerified as $backupId) {
@@ -354,6 +426,22 @@ class WordPressApiClient
                             'verified_at'                => now(),
                         ]
                     );
+                }
+
+                foreach ($incomplete as $backupId) {
+                    BackupLog::updateOrCreate(
+                        ['website_id' => $website->id, 'backup_id' => $backupId],
+                        ['status' => 'incomplete', 'is_removed_from_sharepoint' => false, 'verified_at' => now()]
+                    );
+                }
+                if (! empty($incomplete)) {
+                    ActivityLog::create([
+                        'website_id' => $website->id,
+                        'action'     => 'verification',
+                        'level'      => 'danger',
+                        'message'    => count($incomplete).' backup(s) on SharePoint are missing files and cannot be fully restored.',
+                        'context'    => ['incomplete_backups' => $incomplete],
+                    ]);
                 }
 
                 // Mark deleted / missing backups on SharePoint
@@ -379,11 +467,13 @@ class WordPressApiClient
                     'success'          => true,
                     'verified_count'   => count($allRemoteVerified),
                     'missing_count'    => count($missing),
+                    'incomplete_count' => count($incomplete),
                     'missing_backups'  => $missing,
                     'message'          => sprintf(
-                        'Remote verification complete: %d verified on SharePoint, %d missing/removed.',
+                        'Remote verification complete: %d verified on SharePoint, %d missing/removed, %d incomplete.',
                         count($allRemoteVerified),
-                        count($missing)
+                        count($missing),
+                        count($incomplete)
                     ),
                 ];
             }

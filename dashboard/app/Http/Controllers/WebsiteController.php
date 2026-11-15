@@ -96,10 +96,21 @@ class WebsiteController extends Controller
         // Stats for this website
         $totalBackups = $website->backupLogs()->count();
         $successfulBackups = $website->backupLogs()->where('status', 'completed')->where('is_removed_from_sharepoint', false)->count();
-        $missingBackups = $website->backupLogs()->where('is_removed_from_sharepoint', true)->orWhere('status', 'missing')->count();
+        // Grouped so the OR cannot escape this website's scope.
+        $missingBackups = $website->backupLogs()
+            ->where(fn ($query) => $query->where('is_removed_from_sharepoint', true)->orWhere('status', 'missing'))
+            ->count();
 
         // Other registered websites for URL update suggestions
         $otherWebsites = Website::where('id', '!=', $website->id)->orderBy('name', 'asc')->get();
+
+        // Websites whose completed SharePoint backups can be restored here (cross-site migration).
+        $migrationSources = Website::where('id', '!=', $website->id)
+            ->whereNotNull('site_folder')
+            ->whereHas('backupLogs', fn ($query) => $query->where('status', 'completed')->where('is_removed_from_sharepoint', false))
+            ->with(['backupLogs' => fn ($query) => $query->where('status', 'completed')->where('is_removed_from_sharepoint', false)->limit(20)])
+            ->orderBy('name')
+            ->get();
 
         return view('websites.show', compact(
             'website',
@@ -109,7 +120,8 @@ class WebsiteController extends Controller
             'totalBackups',
             'successfulBackups',
             'missingBackups',
-            'otherWebsites'
+            'otherWebsites',
+            'migrationSources'
         ));
     }
 
@@ -297,10 +309,14 @@ class WebsiteController extends Controller
     public function triggerRestore(Request $request, Website $website)
     {
         $validated = $request->validate([
-            'backup_id' => 'required|string',
+            'backup_id'         => ['required', 'string', 'regex:/^spsync-backup-[A-Za-z0-9_-]{1,80}$/'],
+            'source_website_id' => ['nullable', 'integer', 'exists:websites,id'],
         ]);
 
-        $result = $this->client->triggerRestore($website, $validated['backup_id']);
+        // Migration: restore a backup that another registered website stored in its own SharePoint folder.
+        $source = isset($validated['source_website_id']) ? Website::find($validated['source_website_id']) : null;
+
+        $result = $this->client->triggerRestore($website, $validated['backup_id'], $source);
 
         if ($result['success']) {
             return back()->with('success', "Restore job {$result['restore_job_id']} started! Duration and progress are tracked in the Restore History table.");
@@ -321,7 +337,9 @@ class WebsiteController extends Controller
         $latestRestore = $website->latestRestore;
 
         return response()->json([
-            'success'        => true,
+            'success'        => $backupStatus['success'],
+            'message'        => $backupStatus['message'] ?? null,
+            'backup_overdue' => $website->backup_overdue,
             'website_status' => $website->status,
             'last_sync_at'   => $website->last_sync_at ? $website->last_sync_at->diffForHumans() : 'Never',
             'latest_backup'  => $latestBackup ? [
