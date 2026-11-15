@@ -121,7 +121,7 @@
                 <label for="api_key" class="block text-xs font-bold uppercase tracking-wider text-slate-700">
                     Plugin Secret API Key (<code class="text-red-600">X-SPSYNC-KEY</code>) <span class="text-red-600">*</span>
                 </label>
-                <input type="text" name="api_key" id="api_key" value="{{ old('api_key') }}" required placeholder="Paste the 64-character API Key from WordPress admin" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 font-mono focus:outline-none focus:border-red-600 focus:bg-white">
+                <input type="password" name="api_key" id="api_key" value="" autocomplete="new-password" required placeholder="Paste the 64-character API Key from WordPress admin" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 font-mono focus:outline-none focus:border-red-600 focus:bg-white">
                 <div class="rounded-lg bg-slate-50 border border-slate-200 p-3 text-[11px] text-slate-600 space-y-1 mt-2">
                     <span class="font-bold text-slate-800 block">How to find your API Key:</span>
                     <span>1. In your WordPress admin sidebar, click <strong>SharePoint Backup</strong>.</span><br>

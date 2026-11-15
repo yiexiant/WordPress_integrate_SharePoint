@@ -35,4 +35,13 @@ return [
         ],
     ],
 
+    /*
+     * Connections to WordPress sites running the SharePoint backup plugin.
+     * Production-safe by default; relaxed for APP_ENV=local (self-signed .test sites on 127.0.0.1).
+     */
+    'wordpress' => [
+        'verify_tls' => (bool) env('WP_VERIFY_TLS', env('APP_ENV') !== 'local'),
+        'allow_private_hosts' => (bool) env('WP_ALLOW_PRIVATE_HOSTS', env('APP_ENV') === 'local'),
+    ],
+
 ];

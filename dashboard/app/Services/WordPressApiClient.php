@@ -6,6 +6,7 @@ use App\Models\Website;
 use App\Models\BackupLog;
 use App\Models\RestoreLog;
 use App\Models\ActivityLog;
+use App\Support\SiteUrlGuard;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Exception;
@@ -17,20 +18,27 @@ class WordPressApiClient
      */
     protected function request(Website $website, int $timeout = 15)
     {
-        return Http::timeout($timeout)
+        $request = Http::timeout($timeout)
             ->withHeaders([
                 'X-SPSYNC-KEY' => $website->api_key,
                 'Accept'       => 'application/json',
             ])
-            ->withoutVerifying(); // Allow self-signed or local certificates in dev
+            // Never forward the API key to a redirect target; register the site's canonical URL instead.
+            ->withOptions(['allow_redirects' => false]);
+
+        // TLS is verified unless explicitly disabled (default only for APP_ENV=local).
+        return config('services.wordpress.verify_tls') ? $request : $request->withoutVerifying();
     }
 
     /**
-     * Build API URL for a relative endpoint.
+     * Build API URL for a relative endpoint, refusing targets the deployment does not allow.
+     *
+     * @throws \InvalidArgumentException
      */
     protected function endpoint(Website $website, string $path): string
     {
         $baseUrl = rtrim($website->url, '/');
+        SiteUrlGuard::assertAllowed($baseUrl);
         return $baseUrl . '/wp-json/spsync/v1/' . ltrim($path, '/');
     }
 

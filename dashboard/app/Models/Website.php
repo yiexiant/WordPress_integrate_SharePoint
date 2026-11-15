@@ -21,7 +21,13 @@ class Website extends Model
         'sharepoint_status',
     ];
 
+    /** The plugin API key grants full remote control of the site; never serialize it. */
+    protected $hidden = [
+        'api_key',
+    ];
+
     protected $casts = [
+        'api_key' => 'encrypted',
         'last_sync_at' => 'datetime',
         'last_backup_at' => 'datetime',
         'system_info' => 'array',

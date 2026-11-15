@@ -6,6 +6,7 @@ use App\Models\Website;
 use App\Models\BackupLog;
 use App\Models\RestoreLog;
 use App\Models\ActivityLog;
+use App\Rules\AllowedSiteUrl;
 use App\Services\WordPressApiClient;
 use Illuminate\Http\Request;
 
@@ -58,7 +59,7 @@ class WebsiteController extends Controller
         $validated = $request->validate([
             'name'    => 'required|string|max:255',
             'purpose' => 'nullable|string|in:backup,migration',
-            'url'     => 'required|url|max:255',
+            'url'     => ['required', 'url:http,https', 'max:255', new AllowedSiteUrl],
             'api_key' => 'required|string|max:255',
         ]);
 
@@ -128,11 +129,15 @@ class WebsiteController extends Controller
         $validated = $request->validate([
             'name'    => 'required|string|max:255',
             'purpose' => 'nullable|string|in:backup,migration',
-            'url'     => 'required|url|max:255',
-            'api_key' => 'required|string|max:255',
+            'url'     => ['required', 'url:http,https', 'max:255', new AllowedSiteUrl],
+            'api_key' => 'nullable|string|max:255',
         ]);
 
         $validated['url'] = rtrim($validated['url'], '/');
+        // The stored key is never sent to the browser; a blank field keeps it.
+        if (blank($validated['api_key'] ?? null)) {
+            unset($validated['api_key']);
+        }
         $website->update($validated);
 
         return redirect()->route('websites.show', $website)
