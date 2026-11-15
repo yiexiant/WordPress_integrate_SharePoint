@@ -37,6 +37,8 @@ Skip any step that is already done.
 
 ```powershell
 composer install                      # PHP dependencies (vendor/)
+npm install                           # build tools (node_modules/)
+npm run build                         # compile the page styles and scripts into public/build
 copy .env.example .env                # only if .env does not exist yet
 php artisan key:generate              # only for a NEW .env; never on an existing one (see warning below)
 php artisan migrate                   # create or upgrade the database tables
@@ -52,6 +54,8 @@ The last command asks for a password (at least 12 characters). That is your dash
 
 ```powershell
 composer install
+npm install
+npm run build
 php artisan migrate
 ```
 
@@ -92,9 +96,9 @@ Keep both windows open while you use the dashboard. To stop, press **Ctrl + C** 
    - **Backup Method & Schedule** tab: choose *Automatic backups to SharePoint* and a schedule.
      The dashboard only flags *Backup Overdue* for sites with an automatic schedule.
    - **Overview** tab: copy the **Secret API Key**.
-3. In the dashboard, click **Add Website**, then enter a name, the site's exact URL (for example `http://mysite.test`)
+3. In the dashboard, click **Add website**, then enter a name, the site's exact URL (for example `http://mysite.test`)
    and the API key.
-4. On the website's page, click **Test All Connections**. You should see *WordPress Online* and *SharePoint Connected*.
+4. On the website's page, click **Check connection**. The status should turn green: **Healthy**, or tell you in plain words what is wrong.
 
 ---
 
@@ -102,12 +106,13 @@ Keep both windows open while you use the dashboard. To stop, press **Ctrl + C** 
 
 | I want to… | Do this |
 |---|---|
-| See all sites at a glance | **Dashboard** page (red banner = overdue backups) |
-| Back up one site now | Website page → **Run Backup** |
-| Back up several sites | **Connected Websites** → tick sites → bulk backup |
-| Check backups still exist on SharePoint | Website page → **Verify Backups** |
-| Restore a site | Website page → backup history → **Restore** |
-| Copy one site onto another (migration) | Target website page → **Restore a backup from another website**, then run the URL update |
+| See all sites at a glance | **Overview** page: the headline says whether anything needs attention, with the reason and a button to fix it |
+| Back up one site now | Website page → **Back up now** |
+| Back up several sites | **Websites** → tick sites → **Back up selected** |
+| Check backups still exist on SharePoint | Website page → **Backups** tab → **Check backups on SharePoint** |
+| Restore a site | Website page → **Backups** tab → **Restore** next to the backup |
+| Remove a site from the dashboard | Website page → **Edit** → **Remove website** (SharePoint backups are kept) |
+| Copy one site onto another (migration) | Target website page → **Migrate** tab → step 1 (restore the other site's backup) → step 2 (**Preview changes**, then **Apply changes**) |
 | Refresh every site right now | `php artisan sites:sync` |
 | Add another operator / reset a password | `php artisan dashboard:user someone@example.com` |
 
@@ -127,7 +132,7 @@ Keep both windows open while you use the dashboard. To stop, press **Ctrl + C** 
 | `419 Page Expired` after signing in | The page was open too long. Reload it and try again. |
 | `Address already in use` on port 8000 | Something else is using the port. Use `php artisan serve --port=8001` and open `http://127.0.0.1:8001`. |
 | *Too many login attempts* | Wait one minute (5 attempts per minute). |
-| Dashboard looks unstyled | The layout loads Tailwind and fonts from the internet. Check your internet connection. |
+| Dashboard looks unstyled, or *Vite manifest not found* | Run `npm install` and `npm run build` in the `dashboard` folder, then reload. |
 
 ### Useful checks
 

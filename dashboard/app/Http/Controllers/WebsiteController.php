@@ -9,6 +9,7 @@ use App\Models\ActivityLog;
 use App\Rules\AllowedSiteUrl;
 use App\Services\WordPressApiClient;
 use Illuminate\Http\Request;
+use Illuminate\Pagination\LengthAwarePaginator;
 
 class WebsiteController extends Controller
 {
@@ -24,23 +25,38 @@ class WebsiteController extends Controller
      */
     public function index(Request $request)
     {
-        $query = Website::with(['latestBackup', 'latestRestore'])->withCount('backupLogs');
+        $query = Website::with(['latestBackup'])->withCount('backupLogs');
 
         if ($request->filled('search')) {
-            $search = $request->input('search');
+            $search = $request->string('search')->toString();
             $query->where(function ($q) use ($search) {
                 $q->where('name', 'like', "%{$search}%")
                   ->orWhere('url', 'like', "%{$search}%");
             });
         }
 
-        if ($request->filled('status')) {
-            $query->where('status', $request->input('status'));
-        }
+        // Health is computed (same rules as the Overview), so filter the collection, then paginate.
+        $all = $query->orderBy('name', 'asc')->get()
+            ->each(fn (Website $website) => $website->setAttribute('healthState', $website->health()));
 
-        $websites = $query->orderBy('name', 'asc')->paginate(15)->withQueryString();
+        $filter = in_array($request->input('filter'), ['attention', 'healthy'], true) ? $request->input('filter') : 'all';
+        $filtered = (match ($filter) {
+            'attention' => $all->filter(fn (Website $website) => $website->healthState->needsAttention()),
+            'healthy' => $all->filter(fn (Website $website) => $website->healthState->level === 'ok'),
+            default => $all,
+        })->values();
 
-        return view('websites.index', compact('websites'));
+        $perPage = 25;
+        $page = LengthAwarePaginator::resolveCurrentPage();
+        $websites = (new LengthAwarePaginator($filtered->forPage($page, $perPage), $filtered->count(), $perPage, $page, [
+            'path' => $request->url(),
+        ]))->withQueryString();
+
+        return view('websites.index', [
+            'websites' => $websites,
+            'filter' => $filter,
+            'attentionCount' => $all->filter(fn (Website $website) => $website->healthState->needsAttention())->count(),
+        ]);
     }
 
     /**
@@ -85,21 +101,31 @@ class WebsiteController extends Controller
     /**
      * Display the specified website details, system info, backup logs, and restore duration.
      */
-    public function show(Website $website)
+    public function show(Request $request, Website $website)
     {
-        $website->load(['backupLogs', 'restoreLogs', 'activityLogs']);
+        $tab = in_array($request->query('tab'), ['overview', 'backups', 'restores', 'migrate'], true)
+            ? $request->query('tab')
+            : 'overview';
 
+        $website->load(['latestBackup', 'latestRestore']);
+        $health = $website->health();
         $systemInfo = $website->system_info ?? [];
-        $backupLogs = $website->backupLogs()->paginate(10, ['*'], 'backups_page');
-        $restoreLogs = $website->restoreLogs()->paginate(10, ['*'], 'restores_page');
 
-        // Stats for this website
+        $backupLogs = $website->backupLogs()->paginate(15, ['*'], 'backups_page')->appends(['tab' => 'backups']);
+        $restoreLogs = $website->restoreLogs()->paginate(15, ['*'], 'restores_page')->appends(['tab' => 'restores']);
+        $recentBackups = $website->backupLogs()->limit(5)->get();
+        $recentActivity = $website->activityLogs()->limit(6)->get();
+
         $totalBackups = $website->backupLogs()->count();
         $successfulBackups = $website->backupLogs()->where('status', 'completed')->where('is_removed_from_sharepoint', false)->count();
         // Grouped so the OR cannot escape this website's scope.
         $missingBackups = $website->backupLogs()
             ->where(fn ($query) => $query->where('is_removed_from_sharepoint', true)->orWhere('status', 'missing'))
             ->count();
+
+        // A running job turns on live progress polling in the page.
+        $jobRunning = in_array($website->latestBackup?->status, ['queued', 'uploading'], true)
+            || in_array($website->latestRestore?->status, ['pending', 'downloading', 'extracting', 'restoring_database', 'cleanup'], true);
 
         // Other registered websites for URL update suggestions
         $otherWebsites = Website::where('id', '!=', $website->id)->orderBy('name', 'asc')->get();
@@ -114,12 +140,17 @@ class WebsiteController extends Controller
 
         return view('websites.show', compact(
             'website',
+            'tab',
+            'health',
             'systemInfo',
             'backupLogs',
             'restoreLogs',
+            'recentBackups',
+            'recentActivity',
             'totalBackups',
             'successfulBackups',
             'missingBackups',
+            'jobRunning',
             'otherWebsites',
             'migrationSources'
         ));
