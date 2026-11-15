@@ -49,6 +49,7 @@ namespace {
     define('MINUTE_IN_SECONDS', 60);
     define('DAY_IN_SECONDS', 86400);
     define('WEEK_IN_SECONDS', 604800);
+    define('HOUR_IN_SECONDS', 3600);
     define('ARRAY_N', 'ARRAY_N');
     define('ARRAY_A', 'ARRAY_A');
     define('DB_HOST', 'test-host');
@@ -162,6 +163,8 @@ namespace {
     function esc_html_e($value, $domain = null) { echo esc_html($value); }
     function sanitize_text_field($value) { return strip_tags($value); }
     function wp_nonce_field($value) { echo '<input type="hidden" name="_wpnonce" value="test" />'; }
+    function disabled($value, $expected = true) { if ((string) $value === (string) $expected) { echo 'disabled="disabled"'; } }
+    function sanitize_key($value) { return strtolower(preg_replace('/[^a-z0-9_\-]/i', '', (string) $value)); }
     function checked($value, $expected = true) { if ((string) $value === (string) $expected) { echo 'checked="checked"'; } }
     function selected($value, $expected = true) { if ((string) $value === (string) $expected) { echo 'selected="selected"'; } }
     function wp_date($format, $timestamp = null) { return date($format, $timestamp ?? time()); }
@@ -613,6 +616,83 @@ namespace {
         ob_start(); \SPSync\Admin\SettingsPage::render_settings_page(); $html = ob_get_clean();
         verify(strpos($html, 'name="backup_zip"') !== false && strpos($html, 'Upload, Verify &amp; Restore') !== false, 'Manual Restore offers ZIP input and a single upload/verify/restore button.');
         verify(strpos($html, 'name="confirm_restore" value="1" required') !== false, 'Initial form includes a required overwrite confirmation.');
+        // ---- Admin screens (2.0 layout): every page/section renders cleanly and says the right thing.
+        $render = function (array $get) {
+            $_GET = $get;
+            $_POST = [];
+            set_error_handler(function ($severity, $message, $file, $line) { throw new \ErrorException($message, 0, $severity, $file, $line); });
+            try {
+                ob_start();
+                \SPSync\Admin\SettingsPage::render_settings_page();
+                return ob_get_clean();
+            } catch (\Throwable $error) {
+                ob_end_clean();
+                throw $error;
+            } finally {
+                restore_error_handler();
+            }
+        };
+        $saved_settings = Settings::$values;
+        $wpdb->has_tables = false;
+        foreach (['tenant_id', 'client_id', 'client_secret', 'site_url', 'connection_test', 'backup_running'] as $key) { Settings::delete($key); }
+        Settings::set('backup_frequency', 'manual');
+        Settings::set('restore_status', 'completed');
+
+        $html = $render([]);
+        verify(strpos($html, 'Finish setting up your backups') !== false && strpos($html, 'Get set up') !== false, 'A fresh site sees a setup checklist instead of jargon.');
+        verify(strpos($html, 'Connect SharePoint') !== false && strpos($html, 'Download a copy') !== false, 'Dashboard offers the next step and a device download.');
+        foreach (['dashboard', 'backups', 'restore', 'settings', 'activity'] as $page) {
+            verify(strpos($html, 'tab=' . $page) !== false, "Navigation links to $page.");
+        }
+        foreach (['schedule', 'contents', 'sharepoint', 'dashboard'] as $section) {
+            $page_html = $render(['tab' => 'settings', 'section' => $section]);
+            verify(strpos($page_html, 'aria-current="page">' . \SPSync\Admin\SettingsPage::SECTIONS[$section]) !== false, "Settings section $section renders and is marked current.");
+        }
+        verify(strpos($render(['tab' => 'credentials']), 'Microsoft 365 sign-in') !== false, 'Old "credentials" links open the SharePoint section.');
+        verify(strpos($render(['tab' => 'logs']), 'aria-label="Filter activity"') !== false, 'Old "logs" links open Activity.');
+        verify(strpos($render(['tab' => 'nonsense']), 'Get set up') !== false, 'Unknown screens fall back to the dashboard.');
+        $sharepoint_html = $render(['tab' => 'settings', 'section' => 'sharepoint']);
+        verify(strpos($sharepoint_html, 'name="client_secret" type="password" id="client_secret" value=""') !== false, 'The saved client secret is never sent back to the browser.');
+        verify(strpos($render(['tab' => 'settings', 'section' => 'dashboard']), 'data-spsync-copy="spsync-api-key-input"') !== false, 'Central dashboard key has a copy button.');
+        verify(strpos($render(['tab' => 'backups']), 'No backups yet') !== false, 'Backups screen has an empty state.');
+
+        // Status wording follows the real state.
+        Settings::set('tenant_id', 't'); Settings::set('client_id', 'c'); Settings::set('client_secret', 's'); Settings::set('site_url', 'https://contoso.sharepoint.com/sites/b');
+        \SPSync\Admin\StatusSummary::record_connection_test(['success' => false, 'message' => 'AADSTS7000215: Invalid client secret.']);
+        verify(\SPSync\Admin\StatusSummary::overall([])['title'] === "SharePoint can't be reached", 'A failed connection test is the headline.');
+        \SPSync\Admin\StatusSummary::record_connection_test(['success' => true, 'message' => 'ok']);
+        verify(\SPSync\Admin\StatusSummary::overall([])['title'] === 'Automatic backups are off', 'Manual-only sites are told automatic backups are off.');
+        Settings::set('backup_frequency', 'daily');
+        $recent = ['id' => 'spsync-backup-x', 'time' => time() - 3600, 'files' => 3, 'uploaded' => 3, 'size' => 2048, 'state' => 'completed'];
+        verify(\SPSync\Admin\StatusSummary::overall([$recent])['level'] === 'ok', 'A recent successful backup on a schedule is "protected".');
+        verify(\SPSync\Admin\StatusSummary::overall([['time' => time() - 3 * DAY_IN_SECONDS] + $recent])['title'] === 'Backups are overdue', 'An old last backup on a daily schedule is overdue.');
+        verify(\SPSync\Admin\StatusSummary::overall([['state' => 'failed'] + $recent, $recent])['title'] === 'The last backup failed', 'A failed latest backup is reported.');
+        verify(\SPSync\Admin\StatusSummary::backup_time('spsync-backup-20261114-020000') === (new \DateTimeImmutable('2026-11-14 02:00:00', new \DateTimeZone('UTC')))->getTimestamp(), 'Backup time is read from its ID.');
+        Settings::set('backup_running', (string) (time() - 3600));
+        $html = $render([]);
+        verify(strpos($html, 'A backup seems to be stuck') !== false && strpos($html, 'spsync_reset_lock') !== false, 'The stuck-lock reset is offered only when a backup looks stuck.');
+        Settings::set('backup_running', (string) time());
+        $html = $render([]);
+        verify(strpos($html, 'data-autorefresh') !== false && strpos($html, 'spsync_reset_lock') === false, 'A running backup refreshes the page and hides the reset.');
+        Settings::delete('backup_running');
+        verify(strpos($render([]), 'spsync_reset_lock') === false, 'No reset button when nothing is running.');
+
+        // Restoring a SharePoint backup from the Backups screen requires confirmation and a valid ID.
+        $_POST = ['backup_id' => 'spsync-backup-20261114-020000'];
+        try { \SPSync\Admin\SettingsPage::handle_restore_remote(); verify(false, 'Unconfirmed remote restore was accepted.'); }
+        catch (\RuntimeException $error) { verify(strpos($error->getMessage(), 'tab=backups') !== false && strpos($error->getMessage(), 'Confirm') !== false, 'Remote restore requires explicit confirmation.'); }
+        $_POST = ['backup_id' => '../../etc', 'confirm_restore' => '1'];
+        try { \SPSync\Admin\SettingsPage::handle_restore_remote(); verify(false, 'Invalid backup ID was accepted.'); }
+        catch (\RuntimeException $error) { verify(strpos($error->getMessage(), 'spsync_notice=error') !== false, 'Remote restore rejects malformed backup IDs.'); }
+        $nonce_allowed = false;
+        $_POST = ['backup_id' => 'spsync-backup-20261114-020000', 'confirm_restore' => '1'];
+        try { \SPSync\Admin\SettingsPage::handle_restore_remote(); verify(false, 'Remote restore without a nonce was accepted.'); }
+        catch (\RuntimeException $error) { verify($error->getMessage() === 'invalid nonce', 'Remote restore requires a valid nonce.'); }
+        $nonce_allowed = true;
+        $_POST = [];
+        $_GET = [];
+        Settings::$values = $saved_settings;
+
         // Monthly schedules are calendar-based single events that re-arm after each run.
         $event = \SPSync\Scheduler\Scheduler::EVENT_HOOK;
         \SPSync\Scheduler\Scheduler::update_schedule('monthly', '03:00', 0, 15);
