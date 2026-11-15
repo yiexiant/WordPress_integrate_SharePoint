@@ -1,23 +1,87 @@
-# Environments & Secrets (CRITICAL: Never commit .env files or credentials)
+# =============================================================================
+# Repository-wide ignore rules. Folder-specific rules also live in
+# dashboard/.gitignore, dashboard/database/.gitignore and plugin/tests/.gitignore.
+# Tests (plugin/tests/run.php, dashboard/tests/) ARE committed on purpose; only
+# their by-products are ignored below.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Secrets and credentials (never commit)
+# -----------------------------------------------------------------------------
 .env
 .env.*
 !.env.example
 *.key
 *.pem
+*.p12
+*.pfx
+*.crt
+*.csr
 *.secret
+*.secrets
+secrets.*
+credentials.*
+id_rsa*
+id_ed25519*
+auth.json
+.npmrc.local
+*.kdbx
 
-# Dependencies
+# -----------------------------------------------------------------------------
+# Databases, dumps and backup artifacts (contain site data and password hashes)
+# -----------------------------------------------------------------------------
+*.sqlite
+*.sqlite-*
+*.sqlite.*
+*.sqlite3
+*.db
+*.sql
+*.sql.gz
+*.bak
+*.backup
+*.backup-*
+spsync-backups/
+spsync-backup-*/
+spsync-backup-*.zip
+spsync-import-*/
+spsync-download-*/
+
+# -----------------------------------------------------------------------------
+# Test and tooling by-products (the tests themselves are committed)
+# -----------------------------------------------------------------------------
+.phpunit.result.cache
+.phpunit.cache/
+coverage/
+coverage.xml
+clover.xml
+junit.xml
+.pest/
+.php-cs-fixer.cache
+.php_cs.cache
+.phpactor.json
+plugin/tests/.runtime/
+
+# -----------------------------------------------------------------------------
+# Logs and runtime files
+# -----------------------------------------------------------------------------
+*.log
+/logs/
+npm-debug.log*
+yarn-error.log*
+
+# -----------------------------------------------------------------------------
+# Dependencies and build output (rebuilt with composer install / npm run build)
+# -----------------------------------------------------------------------------
 /vendor/
 /node_modules/
-npm-debug.log
-yarn-error.log
+dashboard/vendor/
+dashboard/node_modules/
+dashboard/public/build/
+dashboard/public/hot
 
-# Databases & Local Data
-*.sqlite
-*.sqlite-journal
-*.db
-
-# Laravel Framework Storage
+# -----------------------------------------------------------------------------
+# Laravel framework storage
+# -----------------------------------------------------------------------------
 storage/framework/cache/*
 storage/framework/sessions/*
 storage/framework/views/*
@@ -29,17 +93,36 @@ storage/logs/*.log
 !storage/framework/testing/.gitignore
 !storage/logs/.gitignore
 
-# Build & System Files
+# -----------------------------------------------------------------------------
+# AI assistant / Laravel Boost tooling (kept on each developer's machine)
+# -----------------------------------------------------------------------------
+.claude/
+.agents/
+.codex/
+.cursor/
+.mcp.json
+boost.json
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+
+# -----------------------------------------------------------------------------
+# Editors and operating systems
+# -----------------------------------------------------------------------------
 .DS_Store
 Thumbs.db
+desktop.ini
 .idea/
 .vscode/
+.zed/
 *.sublime-workspace
 *.sublime-project
+*.swp
+*~
 
-# Legacy temporary directories
+# -----------------------------------------------------------------------------
+# Out of scope for this repository
+# -----------------------------------------------------------------------------
 /backup_dashboard/
 /backup_plugin_V2/
-
-# SEO backend is outside the Git scope of this project
 /seo_agentic_backend_package 1/
