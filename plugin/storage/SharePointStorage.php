@@ -26,8 +26,11 @@ class SharePointStorage
         $filename  = $item->filename;
 
         // Resolve absolute local filepath
-        $upload_dir = wp_upload_dir();
-        $filepath = rtrim($upload_dir['basedir'], '/') . '/spsync-backups/' . $backup_id . '/' . $filename;
+        $filepath = \SPSync\Helpers\LocalPaths::backup_dir($backup_id) . '/' . $filename;
+        if (!file_exists($filepath)) {
+            // Queued before the 1.4.0 private-directory move.
+            $filepath = \SPSync\Helpers\LocalPaths::legacy_backup_dir($backup_id) . '/' . $filename;
+        }
 
         if (!file_exists($filepath)) {
             Logger::error("Upload Failed: Local file does not exist.", [

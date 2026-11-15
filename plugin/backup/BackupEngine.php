@@ -72,7 +72,7 @@ class BackupEngine
 
         // Define local storage paths within WordPress upload folder
         $upload_dir = wp_upload_dir();
-        $base_dir = $destination === 'device' ? $private_directory . '/artifacts' : rtrim($upload_dir['basedir'], '/') . '/spsync-backups/' . $backup_id;
+        $base_dir = $destination === 'device' ? $private_directory . '/artifacts' : \SPSync\Helpers\LocalPaths::backup_dir($backup_id);
         
         // 1. Create and secure directories
         if (!file_exists($base_dir)) {
@@ -208,14 +208,6 @@ class BackupEngine
      */
     private static function secure_directory($dir)
     {
-        $htaccess = $dir . '/.htaccess';
-        if (!file_exists($htaccess)) {
-            @file_put_contents($htaccess, "Deny from all\n");
-        }
-
-        $index = $dir . '/index.php';
-        if (!file_exists($index)) {
-            @file_put_contents($index, "<?php // Silence is golden\n");
-        }
+        \SPSync\Helpers\LocalPaths::protect($dir);
     }
 }

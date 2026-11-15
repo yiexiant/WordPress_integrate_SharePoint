@@ -144,9 +144,13 @@ class QueueManager
      */
     private static function prune_local_backup_files($backup_id)
     {
-        $upload_dir = wp_upload_dir();
-        $dir = rtrim($upload_dir['basedir'], '/') . '/spsync-backups/' . $backup_id;
+        foreach ([\SPSync\Helpers\LocalPaths::backup_dir($backup_id), \SPSync\Helpers\LocalPaths::legacy_backup_dir($backup_id)] as $dir) {
+            self::remove_directory($dir, $backup_id);
+        }
+    }
 
+    private static function remove_directory($dir, $backup_id)
+    {
         if (file_exists($dir)) {
             $files = glob($dir . '/*');
             if (!empty($files)) {
@@ -158,6 +162,7 @@ class QueueManager
             }
             @unlink($dir . '/.htaccess');
             @unlink($dir . '/index.php');
+            @unlink($dir . '/web.config');
             @rmdir($dir);
             Logger::info("Local backup directory pruned: $backup_id");
         }

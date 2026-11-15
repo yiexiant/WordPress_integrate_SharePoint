@@ -55,9 +55,8 @@ class RestoreManager
         $restore_job_id = 'spsync-restore-' . current_time('Ymd-His');
         Logger::info("Initializing restore job: $restore_job_id for backup: $backup_id");
 
-        $upload_dir   = wp_upload_dir();
-        $restore_dir  = rtrim($upload_dir['basedir'], '/') . '/spsync-backups/restore';
-        $rollback_dir = rtrim($upload_dir['basedir'], '/') . '/spsync-backups/rollback';
+        $restore_dir  = \SPSync\Helpers\LocalPaths::restore_dir();
+        $rollback_dir = \SPSync\Helpers\LocalPaths::rollback_dir();
 
         // Locate the backup before the (expensive) snapshot; never create remote folders while restoring.
         $remote_folder_id = \SPSync\Storage\RemoteInventory::find_backup_folder($backup_id, $source_folder);
@@ -184,8 +183,7 @@ class RestoreManager
         }
 
         $table = $wpdb->prefix . 'spsync_restore_items';
-        $upload_dir = wp_upload_dir();
-        $restore_dir = rtrim($upload_dir['basedir'], '/') . '/spsync-backups/restore';
+        $restore_dir = \SPSync\Helpers\LocalPaths::restore_dir();
 
         // 1. Process Downloading Stage
         if ($status === 'downloading') {
@@ -312,7 +310,7 @@ class RestoreManager
             }
 
             // Remove rollback dir
-            $rollback_dir = rtrim($upload_dir['basedir'], '/') . '/spsync-backups/rollback';
+            $rollback_dir = \SPSync\Helpers\LocalPaths::rollback_dir();
             if (file_exists($rollback_dir)) {
                 $files = glob($rollback_dir . '/*');
                 if (!empty($files)) {
@@ -339,8 +337,7 @@ class RestoreManager
     {
         Logger::error("Emergency Rollback Triggered: " . $reason);
 
-        $upload_dir = wp_upload_dir();
-        $rollback_dir = rtrim($upload_dir['basedir'], '/') . '/spsync-backups/rollback';
+        $rollback_dir = \SPSync\Helpers\LocalPaths::rollback_dir();
 
         RestoreEngine::trigger_rollback($rollback_dir);
 

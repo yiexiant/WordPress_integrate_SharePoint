@@ -240,7 +240,7 @@ namespace {
         verify(FileScanner::scan([], [sys_get_temp_dir()]) === [], 'Reject scan roots outside WordPress.');
 
         $id = BackupEngine::run();
-        $base = wp_upload_dir()['basedir'] . '/spsync-backups/' . $id;
+        $base = \SPSync\Helpers\LocalPaths::backup_dir($id);
         $manifest = json_decode(file_get_contents($base . '/manifest.json'), true);
         verify($manifest['backup_type'] === 'selected' && !$manifest['selection']['database'], 'Manifest records selected scope without database.');
         verify(!file_exists($base . '/database.sql'), 'File-only backup must not export SQL.');
@@ -251,13 +251,13 @@ namespace {
         unset($options['spsync_restore_start_lock']);
         BackupSelection::save('selected', [], true);
         $id = BackupEngine::run();
-        $base = wp_upload_dir()['basedir'] . '/spsync-backups/' . $id;
+        $base = \SPSync\Helpers\LocalPaths::backup_dir($id);
         $manifest = json_decode(file_get_contents($base . '/manifest.json'), true);
         verify(count($manifest['parts']) === 1 && $manifest['parts'][0]['filename'] === 'database.sql', 'Database-only backup works without any ZIP files.');
         Settings::delete('backup_running');
         BackupSelection::save('full', [], false);
         $id = BackupEngine::run();
-        $base = wp_upload_dir()['basedir'] . '/spsync-backups/' . $id;
+        $base = \SPSync\Helpers\LocalPaths::backup_dir($id);
         $manifest = json_decode(file_get_contents($base . '/manifest.json'), true);
         verify($manifest['backup_type'] === 'full' && file_exists($base . '/database.sql') && count($manifest['parts']) === 2, 'Full backup preserves default SQL and archive behavior.');
         Settings::delete('backup_running');
@@ -455,7 +455,7 @@ namespace {
         verify(BackupEngine::run() === false, 'A separate backup cannot overtake an accepted API job.');
         $result = \SPSync\Scheduler\Scheduler::run_scheduled_backup($remote_id);
         verify($result === $remote_id, 'Worker creates artifacts using the original API job ID.');
-        $remote_manifest = wp_upload_dir()['basedir'] . '/spsync-backups/' . $remote_id . '/manifest.json';
+        $remote_manifest = \SPSync\Helpers\LocalPaths::backup_dir($remote_id) . "/manifest.json";
         verify(json_decode(file_get_contents($remote_manifest), true)['backup_id'] === $remote_id, 'Manifest and API identifiers remain identical.');
         verify(!get_option('spsync_api_backup_request'), 'Worker releases its pending API request reservation.');
         verify(Settings::get('backup_frequency') === 'once', 'A manually requested API backup does not cancel an independent one-time schedule.');
@@ -613,6 +613,14 @@ namespace {
         ob_start(); \SPSync\Admin\SettingsPage::render_settings_page(); $html = ob_get_clean();
         verify(strpos($html, 'name="backup_zip"') !== false && strpos($html, 'Upload, Verify &amp; Restore') !== false, 'Manual Restore offers ZIP input and a single upload/verify/restore button.');
         verify(strpos($html, 'name="confirm_restore" value="1" required') !== false, 'Initial form includes a required overwrite confirmation.');
+        // Local SharePoint staging lives under an unguessable, protected directory.
+        $private_root = \SPSync\Helpers\LocalPaths::private_root();
+        verify(preg_match('#/spsync-backups/[a-f0-9]{32}\z#', $private_root) === 1, 'Local backups are staged under a random token directory.');
+        verify($private_root === \SPSync\Helpers\LocalPaths::private_root(), 'The token directory is stable across calls.');
+        foreach ([\SPSync\Helpers\LocalPaths::base(), $private_root] as $protected) {
+            verify(strpos((string) @file_get_contents($protected . '/.htaccess'), 'Require all denied') !== false && is_file($protected . '/web.config') && is_file($protected . '/index.php'), 'Staging directories carry Apache 2.4/2.2 and IIS deny rules: ' . $protected);
+        }
+
         // Remote (SharePoint) manifests are validated before their filenames become local paths.
         $hash = str_repeat('a', 64);
         $manifest_error = ['SPSync\\Restore\\RestoreManager', 'manifest_error'];
