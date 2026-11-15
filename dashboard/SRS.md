@@ -1,7 +1,7 @@
 # Software Requirements Specification — Central Backup Dashboard
 
-Document version: 1.0  
-Review date: 11 November 2026  
+Document version: 1.1  
+Review date: 15 November 2026  
 Scope: `dashboard/`  
 Basis: source inspection of controllers, service, models, migrations, routes, Blade views, dependency manifests, configuration, deployment files, and existing tests.
 
@@ -84,12 +84,12 @@ SharePoint credentials belong to the plugin. The dashboard stores the plugin API
 | D-FR-08 | Test WordPress health, cache diagnostics, and report network versus HTTP errors. | Implemented — `checkHealth`, `getSystemInfo` |
 | D-FR-09 | Ask WordPress to test SharePoint and record connection status and activity. | Implemented — `testSharePointConnection` |
 | D-FR-10 | Run combined WordPress, diagnostics, SharePoint and remote verification checks; stop combined checks if health fails. | Implemented — `testAllConnections` |
-| D-FR-11 | Trigger one backup, create a queued local backup log and activity after an accepted remote response. | Partial — asynchronous plugin job ID can differ from returned ID |
+| D-FR-11 | Trigger one backup, create a queued local backup log and activity after an accepted remote response. | Implemented — plugin 1.2.1+ keeps the accepted ID |
 | D-FR-12 | Trigger backups for a nonempty array of existing site IDs and report individual failures and aggregate counts. | Implemented sequentially — `bulkTriggerBackup` |
-| D-FR-13 | Poll the latest remote backup, upsert its counters/status, and update an existing active restore record when its job ID matches. | Partial — latest-job-only synchronization |
+| D-FR-13 | Poll the latest remote backup, upsert its counters/status, track the plugin's current restore (including WordPress-initiated ones) with its failure reason, and store schedule/last-successful-backup data. | Implemented (1.1) — per-job counters remain latest-job-only |
 | D-FR-14 | Display per-site backup and restore histories with separate ten-row pagination. | Implemented — `show` |
-| D-FR-15 | Discover remote backup identifiers and mark known absent backups as missing using the plugin response. | Partial — folder-presence verification, not artifact integrity |
-| D-FR-16 | Request restoration by backup ID, save returned job ID, set local start time and track elapsed time on later polls. | Partial — plugin preparation runs before response; timing excludes that preparation |
+| D-FR-15 | Discover this site's remote backups, mark absent ones missing and incomplete folders `incomplete`. | Implemented (1.1, plugin 1.4.0) — file-count check, not hash integrity |
+| D-FR-16 | Request restoration by validated backup ID (optionally from another site's folder), save returned job ID, set local start time and track elapsed time. | Implemented — 300 s request timeout covers plugin preparation; timing still excludes it |
 | D-FR-17 | Validate old/new URLs, support dry run, request serialized-aware search/replace, and display returned summary. | Implemented orchestration — actual mutation belongs to plugin |
 | D-FR-18 | Present confirmation controls for backup, restore, deletion, bulk backup and live URL replacement where provided by views. | Implemented UI controls; not a server authorization boundary |
 | D-FR-19 | Fetch up to a requested number of remote execution logs through the service. | Service implemented — `fetchLogs`; no dedicated application route exposes it |
@@ -116,7 +116,7 @@ An HTTP-successful health response is sufficient for the dashboard's online clas
 4. A browser request to `/websites/{website}/poll-status` fetches the latest remote job.
 5. Local `BackupLog` is created or updated using `(website_id, backup_id)`.
 
-The details page starts a five-second polling interval and prevents overlapping browser polls. Its current JavaScript only updates the displayed last-sync text; it does not rebuild the backup/restore history tables from the returned JSON. The fleet overview has no equivalent automatic fleet polling loop. There is no scheduled server-side fleet sync in `routes/console.php`.
+The details page starts a five-second polling interval and prevents overlapping browser polls. Its JavaScript only updates the displayed last-sync text. Server-side, `sites:sync` is scheduled every five minutes (see section 12).
 
 ### Remote verification
 
@@ -164,7 +164,7 @@ All paths below follow `{site_url}/wp-json/spsync/v1/`. Requests use `X-SPSYNC-K
 | GET | `logs?limit=N` | 10 s | Remote execution logs |
 | POST | `database/search-replace` | 60 s | Old/new URLs, dry run, replacement counts |
 
-All outbound requests currently call `withoutVerifying()`, disabling TLS certificate validation.
+As of 1.1, TLS is verified unless `WP_VERIFY_TLS=false`, redirects are not followed, and each target URL is checked by `SiteUrlGuard`.
 
 ## 7. Data requirements
 
@@ -178,22 +178,22 @@ All outbound requests currently call `withoutVerifying()`, disabling TLS certifi
 
 Declared backup states include `queued`, `uploading`, `completed`, `failed`, `missing`. Restore states include `pending`, `downloading`, `extracting`, `restoring_database`, `completed`, `failed`; the plugin additionally emits `cleanup`. Statuses are strings rather than database enums.
 
-`last_backup_at` is set to dashboard `now()` whenever a completed remote job is polled, so it does not reliably represent the original backup creation/completion time. Duration displays are dashboard-observed estimates. The service does not populate every declared model field, including backup file size.
+As of 1.1, `last_backup_at` is the plugin-reported time of the newest fully uploaded backup (plugin 1.4.0+); older plugins fall back to first observation. Duration displays are dashboard-observed estimates. The service does not populate every declared model field, including backup file size.
 
 ## 8. Nonfunctional requirements and gaps
 
 | ID | Requirement | Current assessment |
 |---|---|---|
-| D-NFR-01 | Restrict all management and destructive actions to authenticated authorized operators. | Required gap: no `auth` middleware or application login flow on management routes |
-| D-NFR-02 | Protect remote credentials at rest and in presentation. | Required gap: website API key is a normal string column without encrypted/hidden model casts |
-| D-NFR-03 | Verify remote server certificates. | Required gap: client disables TLS verification globally |
-| D-NFR-04 | Validate site targets against the deployment's allowed destinations. | Required gap: general URL validation does not prevent requests to internal network targets |
-| D-NFR-05 | Keep per-site statistics isolated. | Required gap: `show()` missing-count query has an ungrouped `orWhere('status', 'missing')`, potentially counting other sites |
-| D-NFR-06 | Report remote polling failures honestly. | Required gap: controller returns `success: true` even when service synchronization fails |
-| D-NFR-07 | Use one durable job identity from acceptance to completion. | Required gap: plugin creates a new timestamp ID during deferred execution |
+| D-NFR-01 | Restrict all management and destructive actions to authenticated authorized operators. | Implemented (1.1) — session login, throttling, `auth` on all routes; single operator role |
+| D-NFR-02 | Protect remote credentials at rest and in presentation. | Implemented (1.1) — `encrypted` cast, hidden, write-only form field |
+| D-NFR-03 | Verify remote server certificates. | Implemented (1.1) — `WP_VERIFY_TLS`, strict outside local |
+| D-NFR-04 | Validate site targets against the deployment's allowed destinations. | Implemented (1.1) — public-address check on save and per request, no redirects; `WP_ALLOW_PRIVATE_HOSTS` |
+| D-NFR-05 | Keep per-site statistics isolated. | Implemented (1.1) — grouped query; plugin 1.4.0 isolates SharePoint folders |
+| D-NFR-06 | Report remote polling failures honestly. | Implemented (1.1) — `success` mirrors the remote call; `last_error` stored |
+| D-NFR-07 | Use one durable job identity from acceptance to completion. | Implemented — plugin 1.2.1+ |
 | D-NFR-08 | Handle large fleets without request-duration growth proportional to all sites. | Partial: bulk commands run sequentially in the request; no application jobs are dispatched |
-| D-NFR-09 | Count all active restore phases consistently. | Partial: overview active-job count omits plugin `cleanup` phase |
-| D-NFR-10 | Provide repeatable application and integration tests. | Required gap: only example tests exist; no mocked API-contract or workflow suite |
+| D-NFR-09 | Count all active restore phases consistently. | Implemented (1.1) — includes `cleanup` |
+| D-NFR-10 | Provide repeatable application and integration tests. | Implemented (1.1) — 28 feature tests with faked WordPress API |
 
 No measured availability, maximum supported site count, recovery-time objective, recovery-point objective, or response-time SLA is established by this code. README claims of unlimited fleet size are not verified capacity specifications.
 
@@ -224,3 +224,17 @@ No measured availability, maximum supported site count, recovery-time objective,
 PHP 8.3.30 and Composer 2.9.4 were located in Laragon, although neither was initially on PATH. A combined syntax pass across plugin PHP and dashboard application/configuration/migration/test PHP checked 60 files with no syntax errors. Running the existing dashboard PHPUnit command stopped before tests because `vendor/autoload.php` is missing. No live WordPress, SharePoint, restore or URL-migration requests were made. Application code, dependencies and configuration were not changed for this review.
 
 Decisions still needed: intended login/permission model; permitted site destinations; authoritative job identity contract; background synchronization expectations; handling of shared SharePoint folders across sites; and required recovery/availability targets.
+
+## 12. Changes in 1.1 (15 November 2026)
+
+| ID | Requirement | Implementation |
+|---|---|---|
+| D-FR-20 | Operators sign in; accounts are created or reset from the console. | `Auth\LoginController`, `dashboard:user` (12+ character passwords), `throttle:login` (5/min per email+IP) |
+| D-FR-21 | Monitor the fleet without an open browser. | `sites:sync` every 5 minutes (`--with-system-info` daily), `withoutOverlapping`; state-change activity entries |
+| D-FR-22 | Flag scheduled sites without a recent successful backup. | `Website::isBackupOverdue()`: daily 24 h, weekly 7 d, monthly 31 d, plus `WP_BACKUP_OVERDUE_GRACE_HOURS`; measured from registration when no backup exists; recomputed while a site is unreachable; badge and overview alert |
+| D-FR-23 | Restore another site's backup for migration. | Details page form sends `source_website_id`; client sends the source site's `site_folder` as `source_site_folder`; refused when unknown |
+| D-FR-24 | Show restore failure reasons and site metadata. | `restore_logs.error_message`, `websites.site_folder`, `plugin_version`, `backup_frequency`, `next_backup_at`, `last_error` |
+
+New migrations: `2026_11_15_000006_encrypt_website_api_keys` (TEXT column, encrypts existing keys, reversible) and `2026_11_15_000007_add_monitoring_fields_to_websites_table`. The scheduler must run (`schedule:work` or a `schedule:run` cron entry). The supplied Compose file runs only the web server.
+
+Remaining decisions: role-based permissions (currently every operator can do everything), notification channels for overdue/unreachable sites (currently activity log and dashboard only), and running bulk backups through the queue for large fleets.

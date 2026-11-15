@@ -1,58 +1,67 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# SharePoint Backup — Central Dashboard
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+Laravel 13 (PHP 8.3) dashboard for monitoring and operating every WordPress site that runs the
+**WordPress SharePoint Backup Plugin** (`../plugin`, version 1.4.0 or later recommended).
+The dashboard never talks to SharePoint itself. It calls each site's `wp-json/spsync/v1/*` API with that
+site's plugin key (`X-SPSYNC-KEY`).
 
-## About Laravel
+## Setup
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
-
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
-
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
-
-## Learning Laravel
-
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
-
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
-
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
-
-## Agentic Development
-
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
-
-```bash
-composer require laravel/boost --dev
-
-php artisan boost:install
+```sh
+composer install
+cp .env.example .env && php artisan key:generate
+php artisan migrate
+php artisan dashboard:user you@example.com --name="Your Name"   # prompts for a password (12+ chars)
+npm install && npm run build
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+All pages require sign-in. Use `php artisan dashboard:user` to create operators or reset a password.
+Login is rate-limited to 5 attempts per minute per email and IP address.
 
-## Contributing
+> **Upgrading an existing install:** run `php artisan migrate` before opening the dashboard. One migration
+> encrypts the stored plugin API keys with `APP_KEY`. Keep `APP_KEY` safe: if it is lost, every site key must be re-entered.
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+## Unattended monitoring
 
-## Code of Conduct
+`php artisan sites:sync` checks every site's health and backup status. It records the time of the newest *fully
+uploaded* SharePoint backup, the site's schedule and next run, and flags sites as **Backup Overdue**. A site is
+overdue when its newest backup is older than its schedule (daily / weekly / monthly) plus
+`WP_BACKUP_OVERDUE_GRACE_HOURS` (default 6). Activity entries are written only when a site's state changes:
+unreachable or recovered, overdue or caught up.
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+The scheduler runs it every five minutes, and refreshes diagnostics daily. Run the scheduler with either:
 
-## Security Vulnerabilities
+```sh
+php artisan schedule:work                                   # long-running process (containers, dev)
+* * * * * php /path/to/artisan schedule:run >> /dev/null 2>&1   # cron
+```
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+Options: `--website=ID` (repeatable) and `--with-system-info`.
 
-## License
+## Multiple sites in one SharePoint library
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+Plugin 1.4.0 stores each site's backups in its own **site folder** under the shared root folder. The dashboard
+shows each site's folder. The **Restore a backup from another website** form on a site's page restores a completed
+backup of another registered site, for migrations. That sends `source_site_folder` to the plugin, so both sites must
+use the same library and root folder. Afterwards, run the URL search-and-replace on the same page.
+
+## Network safety
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `WP_VERIFY_TLS` | `true` (`false` when `APP_ENV=local`) | Verify WordPress TLS certificates |
+| `WP_ALLOW_PRIVATE_HOSTS` | `false` (`true` when `APP_ENV=local`) | Allow site URLs that resolve to private/loopback/link-local addresses |
+| `WP_BACKUP_OVERDUE_GRACE_HOURS` | `6` | Grace period before a scheduled site counts as overdue |
+
+Site URLs must be absolute http(s) URLs without credentials. They are checked when saved and again before every
+request. Redirects are not followed, so the API key is never sent to another host. Register each site's final
+canonical URL, for example `https://www.example.com` rather than `http://example.com`.
+
+## Tests
+
+```sh
+php artisan test
+```
+
+Feature tests cover the authentication boundary, key encryption, SSRF rules, status/overdue synchronization,
+verification states, cross-site restore and the scheduled monitor. All WordPress calls are faked with `Http::fake()`.
