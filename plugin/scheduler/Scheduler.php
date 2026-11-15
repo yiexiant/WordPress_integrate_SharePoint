@@ -72,6 +72,9 @@ class Scheduler
 
         // If one-time backup was scheduled, set frequency back to manual
         $frequency = Settings::get('backup_frequency', 'manual');
+        if ($frequency === 'monthly' && $requested_backup_id === null && !wp_next_scheduled(self::EVENT_HOOK)) {
+            self::reschedule_from_settings();
+        }
         if ($frequency === 'once' && $requested_backup_id === null) {
             Settings::set('backup_frequency', 'manual');
             Logger::info('One-time scheduled backup completed. Schedule reset to manual.');
@@ -139,6 +142,18 @@ class Scheduler
         }
     }
 
+    /** Re-arm the saved schedule (activation, upgrade, monthly re-arm). */
+    public static function reschedule_from_settings()
+    {
+        self::update_schedule(
+            Settings::get('backup_frequency', 'manual'),
+            Settings::get('backup_time', '02:00'),
+            Settings::get('backup_day_of_week', '0'),
+            Settings::get('backup_day_of_month', '1'),
+            Settings::get('backup_specific_date', '')
+        );
+    }
+
     /**
      * Update WordPress Cron schedule based on settings.
      */
@@ -158,12 +173,14 @@ class Scheduler
             return;
         }
 
-        if ($frequency === 'once') {
+        // Monthly runs are single events re-armed after each run, so they stay on the chosen
+        // calendar day instead of drifting with a fixed 30-day interval.
+        if ($frequency === 'once' || $frequency === 'monthly') {
             wp_schedule_single_event($timestamp, self::EVENT_HOOK);
             $formatted_date = function_exists('wp_date') ? wp_date('Y-m-d H:i:s', $timestamp) : date('Y-m-d H:i:s', $timestamp);
-            Logger::info(sprintf('One-time backup scheduled for %s', $formatted_date));
+            Logger::info(sprintf('%s backup scheduled for %s', $frequency === 'once' ? 'One-time' : 'Monthly', $formatted_date));
         } else {
-            $interval = ($frequency === 'daily') ? 'daily' : (($frequency === 'weekly') ? 'weekly' : 'monthly');
+            $interval = ($frequency === 'daily') ? 'daily' : 'weekly';
             wp_schedule_event($timestamp, $interval, self::EVENT_HOOK);
             $formatted_date = function_exists('wp_date') ? wp_date('Y-m-d H:i:s', $timestamp) : date('Y-m-d H:i:s', $timestamp);
             Logger::info(sprintf('Recurring backup (%s) scheduled. Next run at %s', $frequency, $formatted_date));

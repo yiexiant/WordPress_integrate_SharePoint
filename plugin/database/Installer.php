@@ -9,7 +9,14 @@ class Installer
 {
     public static function init()
     {
-        // Placeholders for future database-related hooks (e.g. migration updates)
+        // In-place upgrades (no reactivation): re-arm schedules whose cron shape changed.
+        if (get_option('spsync_installed_version') !== SPSYNC_VERSION) {
+            update_option('spsync_installed_version', SPSYNC_VERSION, false);
+            if (\SPSync\Helpers\Settings::get('backup_frequency', 'manual') === 'monthly') {
+                // Pre-1.4.0 monthly schedules used a drifting 30-day recurring event.
+                \SPSync\Scheduler\Scheduler::reschedule_from_settings();
+            }
+        }
     }
 
     /**
@@ -76,6 +83,11 @@ class Installer
 
         // Seed default configurations and generate initial secure REST API key if not present
         self::seed_default_settings();
+
+        // Deactivation cleared cron events: restore the saved schedule and resume pending uploads.
+        \SPSync\Scheduler\Scheduler::reschedule_from_settings();
+        \SPSync\Queue\QueueManager::trigger();
+        update_option('spsync_installed_version', SPSYNC_VERSION, false);
     }
 
     /**
@@ -83,8 +95,16 @@ class Installer
      */
     public static function deactivate()
     {
-        // Retention of database tables on deactivation is a standard practice
-        // to prevent accidental data loss. Deletion should occur on uninstall.php instead.
+        // Tables and settings are kept (deletion belongs in uninstall); only stop background work
+        // so a deactivated plugin does not leave orphaned cron events behind.
+        foreach ([
+            \SPSync\Scheduler\Scheduler::EVENT_HOOK,
+            \SPSync\Queue\QueueManager::ACTION_HOOK,
+            \SPSync\Restore\RestoreManager::ACTION_HOOK,
+            'spsync_daily_cleanup',
+        ] as $hook) {
+            wp_unschedule_hook($hook);
+        }
     }
 
     /**

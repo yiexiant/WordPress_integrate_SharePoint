@@ -613,6 +613,22 @@ namespace {
         ob_start(); \SPSync\Admin\SettingsPage::render_settings_page(); $html = ob_get_clean();
         verify(strpos($html, 'name="backup_zip"') !== false && strpos($html, 'Upload, Verify &amp; Restore') !== false, 'Manual Restore offers ZIP input and a single upload/verify/restore button.');
         verify(strpos($html, 'name="confirm_restore" value="1" required') !== false, 'Initial form includes a required overwrite confirmation.');
+        // Monthly schedules are calendar-based single events that re-arm after each run.
+        $event = \SPSync\Scheduler\Scheduler::EVENT_HOOK;
+        \SPSync\Scheduler\Scheduler::update_schedule('monthly', '03:00', 0, 15);
+        $monthly = array_values(array_filter($scheduled, function ($e) use ($event) { return $e[0] === $event; }));
+        verify(count($monthly) === 1 && $monthly[0][1] === [], 'Monthly backups use a single calendar event, not a drifting 30-day recurrence: ' . json_encode($monthly));
+        $next = \SPSync\Scheduler\Scheduler::calculate_next_timestamp('monthly', '03:00', 0, 15);
+        verify((int) wp_date('j', $next) === 15, 'The next monthly run lands on the chosen day of the month.');
+        Settings::set('backup_frequency', 'monthly');
+        Settings::set('backup_day_of_month', '15');
+        $scheduled = array_values(array_filter($scheduled, function ($e) use ($event) { return $e[0] !== $event; }));
+        \SPSync\Scheduler\Scheduler::run_scheduled_backup();
+        Settings::delete('backup_running');
+        verify((bool) wp_next_scheduled($event), 'A monthly run re-arms the next calendar month.');
+        \SPSync\Scheduler\Scheduler::update_schedule('manual');
+        Settings::set('backup_frequency', 'manual');
+
         // Status responses carry monitoring data and surface restore errors.
         Settings::set('restore_status', 'failed');
         Settings::set('restore_error', 'Checksum mismatch');
