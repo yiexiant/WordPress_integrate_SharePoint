@@ -6,6 +6,7 @@ use App\Models\ActivityLog;
 use App\Models\Website;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\Factory;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
@@ -46,7 +47,7 @@ class SyncWebsitesTest extends TestCase
         $this->assertTrue($website->fresh()->backup_overdue);
         $this->assertSame(1, ActivityLog::where('action', 'monitor')->where('level', 'danger')->count(), 'Overdue is logged once, not every run.');
 
-        Http::swap(new \Illuminate\Http\Client\Factory);
+        Http::swap(new Factory);
         $this->fakeSite('shop.test', '2026-11-20T02:05:00+00:00');
         $this->artisan('sites:sync')->assertSuccessful();
 

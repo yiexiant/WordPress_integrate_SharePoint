@@ -95,9 +95,9 @@ class SyncWebsites extends Command
     {
         ActivityLog::create([
             'website_id' => $website->id,
-            'action'     => 'monitor',
-            'level'      => $level,
-            'message'    => $message,
+            'action' => 'monitor',
+            'level' => $level,
+            'message' => $message,
         ]);
         $this->line($message);
     }

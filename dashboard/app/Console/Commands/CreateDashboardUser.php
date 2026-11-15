@@ -28,8 +28,8 @@ class CreateDashboardUser extends Command
         $validator = Validator::make(
             ['email' => $email, 'name' => $name, 'password' => $secret],
             [
-                'email'    => ['required', 'email', 'max:255'],
-                'name'     => ['required', 'string', 'max:255'],
+                'email' => ['required', 'email', 'max:255'],
+                'name' => ['required', 'string', 'max:255'],
                 'password' => ['required', Password::min(12)],
             ],
         );
