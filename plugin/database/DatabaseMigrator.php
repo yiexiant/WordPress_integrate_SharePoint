@@ -33,6 +33,16 @@ class DatabaseMigrator
             ];
         }
 
+        foreach ([$old_url, $new_url] as $url) {
+            $scheme = strtolower((string) parse_url($url, PHP_URL_SCHEME));
+            if (!filter_var($url, FILTER_VALIDATE_URL) || !in_array($scheme, ['http', 'https'], true)) {
+                return [
+                    'success' => false,
+                    'message' => 'Both URLs must be absolute http:// or https:// addresses.',
+                ];
+            }
+        }
+
         if (strcasecmp($old_url, $new_url) === 0) {
             return [
                 'success' => false,
@@ -93,10 +103,12 @@ class DatabaseMigrator
                 continue;
             }
 
-            // Search rows containing the old URL in any of the candidate columns
+            // Search rows containing the old URL in any of the candidate columns.
+            // The value is bound through prepare(); esc_like() alone does not quote SQL.
+            $like = '%' . $wpdb->esc_like($old_url) . '%';
             $where_clauses = [];
             foreach ($text_columns as $col) {
-                $where_clauses[] = "`{$col}` LIKE '%" . $wpdb->esc_like($old_url) . "%'";
+                $where_clauses[] = $wpdb->prepare('`' . str_replace('`', '``', $col) . '` LIKE %s', $like);
             }
             $where_sql = implode(' OR ', $where_clauses);
 

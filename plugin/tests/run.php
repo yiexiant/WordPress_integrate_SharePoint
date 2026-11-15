@@ -543,6 +543,30 @@ namespace {
         ob_start(); \SPSync\Admin\SettingsPage::render_settings_page(); $html = ob_get_clean();
         verify(strpos($html, 'name="backup_zip"') !== false && strpos($html, 'Upload, Verify &amp; Restore') !== false, 'Manual Restore offers ZIP input and a single upload/verify/restore button.');
         verify(strpos($html, 'name="confirm_restore" value="1" required') !== false, 'Initial form includes a required overwrite confirmation.');
+        // URL migration binds the search value instead of concatenating it into SQL.
+        $real_wpdb = $wpdb;
+        $wpdb = new class {
+            public $prefix = 'wp_';
+            public $selects = [];
+            public function get_col($sql) { return ['wp_options']; }
+            public function get_row($sql) { return (object) ['Column_name' => 'option_id']; }
+            public function get_results($sql, $mode = null) {
+                if (strpos($sql, 'SHOW COLUMNS') === 0) { return [(object) ['Field' => 'option_value', 'Type' => 'longtext']]; }
+                $this->selects[] = $sql;
+                return [];
+            }
+            public function esc_like($value) { return addcslashes($value, '_%\\'); }
+            public function prepare($query, ...$args) {
+                return str_replace('%s', "'" . addslashes($args[0]) . "'", $query);
+            }
+        };
+        $injection = "https://old.example/x' OR 1=1 -- ";
+        verify(\SPSync\Database\DatabaseMigrator::search_and_replace($injection, 'https://new.example')['success'] === false, 'URL migration rejects malformed URLs.');
+        \SPSync\Database\DatabaseMigrator::search_and_replace("https://old.example/a'b", 'https://new.example', true);
+        verify(isset($wpdb->selects[0]) && strpos($wpdb->selects[0], "LIKE '%https://old.example/a\\'b%'") !== false, 'URL migration escapes quotes in the LIKE value: ' . json_encode($wpdb->selects));
+        verify(\SPSync\Database\DatabaseMigrator::search_and_replace('javascript:alert(1)', 'https://new.example')['success'] === false, 'URL migration accepts only http(s) URLs.');
+        $wpdb = $real_wpdb;
+
         echo "PASS: $checks regression checks\n";
     } finally {
         foreach ($device_directories as $path) { PrivateStorage::remove($path, 'download'); }
