@@ -1,12 +1,30 @@
 # WordPress SharePoint Backup Plugin
 
-Version 1.4.0. Install `schedule_backup_plugin.zip` through WordPress **Plugins → Add New → Upload Plugin**, then open **SharePoint Backup**.
+Version 1.5.0. Install `schedule_backup_plugin.zip` through WordPress **Plugins → Add New → Upload Plugin**, then open **SharePoint Backup**.
 
 > **Production rollout** (Entra ID app registration, Graph permissions, server cron, Nginx rule, verification, upgrades): see [DEPLOYMENT.md](DEPLOYMENT.md).
 
+## The admin screens
+
+Open **SharePoint Backup** in the WordPress menu:
+
+- **Dashboard**: one plain answer to “is this website backed up?” (for example *Your website is backed up*,
+  *Backups are overdue*, *The last backup failed*, *SharePoint can’t be reached*), the next step to take, a setup
+  checklist for new installs, and the last backup, next backup and SharePoint connection at a glance.
+- **Backups**: **Back up now**, **Download a copy** to your computer, and every backup stored on SharePoint with its
+  date, size, upload progress and a **Restore** button.
+- **Restore**: upload a backup ZIP and restore it; the result of the last restore is shown at the top.
+- **Settings**: **Schedule** (with a plain summary such as “Backs up every Monday at 02:00 and keeps the last 30”),
+  **Backup Contents**, **SharePoint** (with help for finding the Entra ID values and a **Test connection** button)
+  and **Central Dashboard** (show and copy the API key).
+- **Activity**: everything the plugin did, in your timezone, with a **Problems only** filter.
+
+Screens refresh themselves while a backup or restore runs. If a backup has been stuck for over 10 minutes, a
+**Clear stuck backup** button appears at the top.
+
 ## Connect another dashboard through the API
 
-Copy the **Secret API Key** from Overview into the dashboard's backup-plugin connection form with this WordPress site's URL. Authenticated requests use `X-SPSYNC-KEY` under `/wp-json/spsync/v1/`. The SEO backend in the neighboring package now provides a dedicated `/backup-dashboard` page and client-scoped backup API; its SAC publishing token remains separate.
+Copy the key from **Settings › Central Dashboard** into the dashboard's **Add website** form with this WordPress site's URL. Authenticated requests send `X-SPSYNC-KEY` to `/wp-json/spsync/v1/…` or, on sites with Plain permalinks, `/?rest_route=/spsync/v1/…`. The SEO backend in the neighboring package now provides a dedicated `/backup-dashboard` page and client-scoped backup API; its SAC publishing token remains separate.
 
 Version 1.2.1 keeps the ID returned by `POST backup/start` unchanged when its worker creates artifacts. `GET backup/status` reports a queued API request before packaging starts and reports identifiable pre-upload failures. The worker still needs WordPress cron or Action Scheduler. API backup commands create SharePoint backups; device downloads remain administrator actions inside WordPress.
 
@@ -32,10 +50,10 @@ location ~* /wp-content/uploads/spsync-backups/ { deny all; }
 
 ## Choose manual or automatic backups
 
-Open **Backup Method & Schedule** and choose:
+Open **Settings › Schedule** and choose:
 
-- **Manual backups to my device:** automatic backups are turned off. Use **Manual Backup & Download → Create Backup for My Device**, refresh the status, then click **Download ZIP to My Device**. No SharePoint credentials are required.
-- **Automatic backups to SharePoint:** choose your frequency, day/date and time, configure SharePoint, and save. The existing scheduled cloud-backup workflow runs without keeping the browser open.
+- **Only when I start one:** automatic backups are turned off. Use **Backups → Back up now**, or **Backups → Download a copy → Create Backup for My Device**; when it is ready (the page refreshes itself) click **Download ZIP to My Device**. No SharePoint credentials are required.
+- **Automatically, to SharePoint:** choose how often, the day/date and time, and how many backups to keep, then **Save schedule**. The existing scheduled cloud-backup workflow runs without keeping the browser open.
 
 Manual-only is the default for a new installation. Existing automatic schedules are preserved during upgrade. You can create a device download at any time without changing an automatic schedule. Saving SharePoint credentials does not reset your chosen method or schedule.
 
@@ -45,19 +63,19 @@ Download the file within 24 hours. The plugin schedules temporary-copy cleanup u
 
 ## Choose backup contents
 
-Open **Backup Contents**. **Entire website and database** is selected by default, preserving the original full-backup behavior and its existing cache, temporary-file, log and archive exclusions.
+Open **Settings › Backup Contents**. **The whole website** is selected by default, preserving the original full-backup behavior and its existing cache, temporary-file, log and archive exclusions.
 
-To back up selected content, choose **Only selected wp-content directories**, select plugins, themes, uploads or any other discovered readable directory, and save. Selected-directory mode includes regular files, including archives, within the selected directories. The plugin's backup storage and symlinks are excluded.
+To back up selected content, choose **Only some folders**, select plugins, themes, uploads or any other discovered readable directory, and save. Selected-directory mode includes regular files, including archives, within the selected directories. The plugin's backup storage and symlinks are excluded.
 
-The database is optional in selected-directory mode. Check **Include the WordPress database too** when needed; selecting only that checkbox creates a database-only backup. These settings apply to manual, scheduled and central-dashboard backups. Empty selections are rejected.
+The database is optional in selected-directory mode. Check **Include the database** when needed; selecting only that checkbox creates a database-only backup. These settings apply to manual, scheduled and central-dashboard backups. Empty selections are rejected.
 
 ## Upload, verify and restore a backup
 
-1. Open **Manual Restore** and choose the ZIP downloaded by this plugin, or a ZIP containing exactly one plugin backup folder. You can still select the folder itself or its individual files instead. Use only one upload option.
+1. Open **Restore** and choose (or drag in) the ZIP downloaded by this plugin, or a ZIP containing exactly one plugin backup folder. Under **Other ways to upload** you can select the folder itself or its individual files instead. Use only one upload option.
 2. Check the overwrite confirmation on the upload form, then click **Upload, Verify & Restore**.
 3. The plugin receives and unpacks the backup privately, validates safe archive paths, and verifies `manifest.json`, all declared files, sizes and SHA-256 checksums. Nothing is restored if verification fails.
 4. Once verification succeeds, restoration starts automatically after the upload response. There is no second Start button. A recovery snapshot is created before site files or database data are overwritten.
-5. Refresh the status panel or check **Execution Logs**. The immediate dispatch does not wait for a cron visit; a scheduled action remains as a fallback. On servers that cannot finish the HTTP response early, the page may keep loading while restoration runs. SharePoint credentials are not required.
+5. The **Restore** screen shows the result and **Activity** logs every step. The immediate dispatch does not wait for a cron visit; a scheduled action remains as a fallback. On servers that cannot finish the HTTP response early, the page may keep loading while restoration runs. SharePoint credentials are not required.
 
 Accepted ZIPs may have components at the archive root or within one backup folder. They must contain one `manifest.json`, every named `backup_part*.zip`, and `database.sql` if included by that manifest. Multiple backups in one ZIP, arbitrary website ZIPs, and backups from other plugins are rejected. Do not unzip the inner ZIP parts.
 
@@ -134,3 +152,16 @@ The harness uses temporary fixture files and WordPress/database stubs. It does n
 - `backup/status` adds `last_successful_backup`, `schedule` (frequency, next run), `site_folder`, `plugin_version` and `restore.error`. `health` and `system/info` add `site_url` and `site_folder`.
 - Monthly schedules stay on the chosen calendar day. Deactivation clears cron events; activation and upgrade restore them.
 - Changing the library or root folder clears cached SharePoint IDs.
+
+## Release notes — 1.5.0
+
+- Redesigned and restructured admin: **Dashboard · Backups · Restore · Settings · Activity** replace the seven
+  overlapping tabs. Old links (`tab=overview`, `credentials`, `automation`, `download`, `contents`, `logs`) still work.
+- Dashboard answers “is this website backed up?” in plain words with the next action, plus a setup checklist.
+- Backups lists this site’s SharePoint backups with dates, sizes and progress, and can restore one (with confirmation).
+- Settings are split into Schedule, Backup Contents, SharePoint and Central Dashboard; the schedule shows a live summary,
+  the SharePoint section explains where to find each value and remembers the last connection test, and the client
+  secret is never sent back to the browser (leave it empty to keep it).
+- Activity shows site-timezone times, a problems-only filter and expandable technical details.
+- The stuck-backup reset only appears when a backup has run for over 10 minutes.
+- WordPress-native buttons and admin colour scheme; responsive layout; CSS/JS moved to `admin/assets/`.

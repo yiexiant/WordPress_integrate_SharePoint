@@ -57,7 +57,7 @@ Central dashboard ── HTTPS + X-SPSYNC-KEY ──► plugin REST API (?rest_r
 | PHP extensions | `openssl` (required: encrypts the client secret and talks to Microsoft), `curl`, `zip` (recommended; WordPress's PclZip is a slower fallback), `json`, `mysqli` |
 | Outbound HTTPS | `login.microsoftonline.com` and `graph.microsoft.com` (port 443), plus SharePoint download hosts (`*.sharepoint.com`) for restores |
 | Disk space | At least **2–3× the site size** free: database dump + ZIP parts while uploading, more during a restore (downloaded backup + safety snapshot) |
-| PHP limits | `memory_limit` ≥ 256M, `max_execution_time` 300+ (or 0 for CLI cron); for uploads in **Manual Restore**, `upload_max_filesize`/`post_max_size` larger than the backup ZIP |
+| PHP limits | `memory_limit` ≥ 256M, `max_execution_time` 300+ (or 0 for CLI cron); for uploads on the **Restore** screen, `upload_max_filesize`/`post_max_size` larger than the backup ZIP |
 | Temp directory | A writable directory **outside** the WordPress folder and web root, for manual restores and device downloads (defaults to the system temp directory) |
 | Microsoft 365 | A SharePoint Online site and an Entra ID account that can register apps and grant admin consent |
 
@@ -115,7 +115,7 @@ This lets the app write to **every** SharePoint site in the tenant. Use Option B
 
    Without this site grant the plugin authenticates successfully, but SharePoint calls fail with *Access denied* (HTTP 403).
 
-> Permission changes can take a few minutes to apply. If **Test SharePoint Connection** fails right after granting
+> Permission changes can take a few minutes to apply. If **Test connection** fails right after granting
 > consent, wait 5–10 minutes and try again.
 
 ---
@@ -150,7 +150,7 @@ Raise these in `php.ini`, `.user.ini` or your host's control panel when needed:
 ```ini
 memory_limit = 256M
 max_execution_time = 300
-upload_max_filesize = 2G   ; only needed for Manual Restore uploads
+upload_max_filesize = 2G   ; only needed for uploads on the Restore screen
 post_max_size = 2G
 ```
 
@@ -217,48 +217,64 @@ start once you configure them in §6.
 
 ## 6. Configure the plugin
 
-Open **WordPress admin → SharePoint Backup**.
+Open **WordPress admin → SharePoint Backup**. The plugin has five screens:
 
-### 6.1 SharePoint & OAuth Config tab
+| Screen | Use it to |
+|---|---|
+| **Dashboard** | See at a glance whether the site is backed up, follow the setup checklist, or **Back up now** |
+| **Backups** | Back up now, download a copy to your computer, and see or **Restore** the backups on SharePoint |
+| **Restore** | Upload a backup ZIP and restore it |
+| **Settings** | Schedule · Backup Contents · SharePoint · Central Dashboard |
+| **Activity** | What the plugin did, with a **Problems only** filter |
+
+Until setup is complete, the Dashboard shows a three-step checklist (connect SharePoint → turn on automatic backups →
+make the first backup) with a button for each step.
+
+### 6.1 Settings › SharePoint
 
 | Field | Value |
 |---|---|
 | Tenant ID | Directory (tenant) ID from §3.2 |
 | Client ID | Application (client) ID from §3.2 |
-| Client Secret | Secret **Value** from §3.2 (keep **Encrypt Client Secret in Database** ticked) |
-| SharePoint Site URL | Full site URL, for example `https://contoso.sharepoint.com/sites/WebsiteBackups` |
-| Document Library | Library display name, usually `Documents` |
-| Root Backup Folder | Shared folder for all websites, for example `WordPress Backups` |
-| Site Folder | This website's own folder. Defaults to its host name (e.g. `www.example.com`). **Choose it before the first backup.** Renaming later hides older backups from retention and verification. Never give two websites the same site folder. |
+| Client Secret | Secret **Value** from §3.2. It is never shown again; leave the field empty to keep the saved one. Keep **Store the secret encrypted** ticked. |
+| SharePoint site address | Full site URL, for example `https://contoso.sharepoint.com/sites/WebsiteBackups` |
+| Document library | Library display name, usually `Documents` |
+| Main backup folder | Shared folder for all websites, for example `WordPress Backups` |
+| This website’s folder | This website’s own folder. Defaults to its host name (e.g. `www.example.com`). **Choose it before the first backup.** Renaming it later hides older backups from retention and verification. Never give two websites the same folder. |
 
-Click **Save**, then go to **Overview & Testing → Test SharePoint Connection**. Success means the plugin signed in,
-found the site and library, and created or confirmed the root folder and this site's folder.
+The screen previews the full path (`Documents / WordPress Backups / www.example.com`). Click **Save SharePoint settings**,
+then **Test connection**. Success means the plugin signed in, found the site and library, and created or confirmed the
+main folder and this site’s folder. The result is remembered and shown on the Dashboard.
 
-### 6.2 Backup Contents tab
+### 6.2 Settings › Backup Contents
 
-- **Entire website and database** (default): full backup. Caches, logs, `.git`, `node_modules` and existing archives are skipped.
-- **Only selected wp-content directories**: pick folders (plugins, themes, uploads…) and optionally the database.
+- **The whole website** (default): WordPress, themes, plugins, uploads and the database. Caches, logs, `.git`,
+  `node_modules` and existing archives are skipped.
+- **Only some folders**: pick folders inside `wp-content`, with or without the database.
 
-### 6.3 Backup Method & Schedule tab
+### 6.3 Settings › Schedule
 
-1. Choose **Automatic backups to SharePoint**.
-2. Pick **Daily**, **Weekly** (choose the day) or **Monthly** (day 1–28), and a time. Times use the timezone in
-   **Settings → General**.
-3. Set the **SharePoint Retention Policy**: how many of this website's backups to keep on SharePoint (default 30; older ones are deleted
-   after each successful backup; `0` keeps everything).
-4. **Save**. The dashboard marks the site **Backup overdue** if no successful backup arrives within the schedule plus 6 hours.
+1. Choose **Automatically, to SharePoint**.
+2. Pick **Every day**, **Every week** (choose the day) or **Every month** (day 1–28), and a time. Times use the
+   timezone in **Settings → General**.
+3. Under **Keep**, choose how many of this website’s backups stay on SharePoint (default 30; older ones are deleted
+   after each successful backup; *every backup* never deletes).
+4. Check the summary sentence (e.g. *“Backs up every Monday at 02:00 and keeps the last 30.”*) and click
+   **Save schedule**. The central dashboard marks the site **Backup overdue** if no successful backup arrives within
+   the schedule plus 6 hours.
 
 ### 6.4 First backup
 
-**Overview & Testing → Back Up to SharePoint Now**, then watch **Execution Logs**. A healthy run logs the database export,
-ZIP parts, and `All backup files uploaded to SharePoint successfully`. In SharePoint you should now see
+**Dashboard → Back up now** (or **Backups → Back up now**). Upload progress appears in **Backups › Backups on
+SharePoint**, and every step is logged in **Activity**. In SharePoint you should now see
 `WordPress Backups/<site folder>/spsync-backup-…/` containing `manifest.json`, `database.sql` and `backup_part*.zip`.
+The Dashboard headline turns to **“Your website is backed up”**.
 
 ---
 
 ## 7. Connect the site to the central dashboard
 
-1. **Overview & Testing** tab → copy the **Central Dashboard Secret API Key**.
+1. **Settings › Central Dashboard** → **Copy key**.
 2. In the dashboard: **Add website** → name, the site's exact public address (including `https://` and `www` if
    used) and the API key.
 3. Click **Check connection**. The site should show **Healthy**, or a plain-language reason.
@@ -268,7 +284,7 @@ firewall or security plugin (Wordfence, Cloudflare WAF…) filters REST requests
 that carry the `X-SPSYNC-KEY` header, from the dashboard server's IP address.
 
 **Rotating the key.** The admin screen has no regenerate button. Rotate the key with WP-CLI, copy the new key from
-**Overview & Testing**, and paste it under **Edit** in the dashboard. The dashboard is disconnected until you do.
+**Settings › Central Dashboard**, and paste it under **Edit** in the dashboard. The dashboard is disconnected until you do.
 
 ```sh
 wp eval 'SPSync\Helpers\Settings::set("api_key", bin2hex(random_bytes(32))); echo "API key rotated" . PHP_EOL;'
@@ -280,13 +296,13 @@ wp eval 'SPSync\Helpers\Settings::set("api_key", bin2hex(random_bytes(32))); ech
 
 Tick every item before relying on a site:
 
-- [ ] **Test SharePoint Connection** succeeds.
+- [ ] **Settings › SharePoint → Test connection** succeeds, and after the first backup the Dashboard says **“Your website is backed up”**.
 - [ ] A manual backup completes and its folder appears under `<root>/<site folder>/` in SharePoint.
 - [ ] The dashboard shows the site as **Healthy** with the right schedule and "Last successful backup".
 - [ ] (Nginx) `/wp-content/uploads/spsync-backups/` is not downloadable (§4.3).
 - [ ] System cron is configured (§4.1) and the next scheduled backup actually runs. Check the next day.
 - [ ] **Restore test on a staging copy:** restore the latest backup onto a staging site (dashboard **Migrate** tab,
-      or plugin **Manual Restore** with a downloaded ZIP) and confirm the site works.
+      or the plugin’s **Restore** screen with a downloaded ZIP) and confirm the site works.
       *An untested backup is not a backup.*
 
 ---
@@ -310,7 +326,7 @@ Tick every item before relying on a site:
 ## 10. Upgrading the plugin
 
 1. Read the release notes in `README.md`.
-2. Take a backup first (**Overview & Testing → Back Up to SharePoint Now**).
+2. Take a backup first (**Dashboard → Back up now**).
 3. Upload the new ZIP through **Plugins → Add New Plugin → Upload Plugin** and choose **Replace current with uploaded**,
    or run `wp plugin install schedule_backup_plugin.zip --force`.
 4. Settings, API key, schedule and history are kept. Plugin upgrades re-arm the saved schedule automatically.
@@ -325,7 +341,7 @@ backups go into the site folder. Confirm the **Site Folder** name right after up
 
 - [ ] HTTPS on the WordPress site (the API key travels in a header).
 - [ ] **Client secret expiry tracked**: create a new secret in Entra ID before the old one expires, paste it in the
-      plugin, run **Test SharePoint Connection**, then delete the old secret.
+      plugin (**Settings › SharePoint**), click **Test connection**, then delete the old secret.
 - [ ] Prefer `Sites.Selected` (§3.3 Option B) over tenant-wide `Sites.ReadWrite.All`.
 - [ ] Only trusted administrators have `manage_options`: they can download full backups and restore the site.
 - [ ] Treat the **Secret API Key** like a password. Rotate it if it leaks (§7), then update the dashboard.
@@ -338,7 +354,7 @@ backups go into the site folder. Confirm the **Site Folder** name right after up
 
 ## 12. Troubleshooting
 
-Start with **SharePoint Backup → Execution Logs**: every step is logged.
+Start with the plugin’s **Dashboard** (it names the problem in plain words), then **Activity → Problems only**: every step is logged.
 
 | Symptom | Cause and fix |
 |---|---|
@@ -348,13 +364,13 @@ Start with **SharePoint Backup → Execution Logs**: every step is logged.
 | Graph `HTTP 403 Access denied` | Admin consent missing, or with `Sites.Selected` the site grant is missing (§3.3). |
 | `Could not resolve SharePoint Site ID` | Site URL wrong. Use `https://<tenant>.sharepoint.com/sites/<name>`, no trailing page path. |
 | `Document library not found` | Use the library's display name (`Documents`), not `Shared Documents`. |
-| Backups never start / stall at "Uploading" | WP-Cron not running. Set up system cron (§4.1). In **Overview & Testing**, use **Clear / Reset Stale Lock** if a crashed run left a lock. |
+| Backups never start / stall at "Uploading" | WP-Cron not running. Set up system cron (§4.1). If a crashed run left a backup stuck for more than 10 minutes, every plugin screen shows **Clear stuck backup** at the top. |
 | `Backup aborted: Another backup process is currently running` | A run is in progress or a stale lock exists (cleared automatically after 10 minutes, or manually as above). |
 | PHP fatal error / out of memory during backup | Raise `memory_limit` and `max_execution_time`; use selected-directory mode to exclude huge folders. |
 | Dashboard: *did not answer at this address (HTTP 404)* | Plugin not activated, wrong site address, or a security plugin blocking the REST API. |
 | Dashboard: *rejected the API key* | Key regenerated or mistyped. Paste the current key under **Edit** in the dashboard. |
-| Manual Restore upload fails immediately | ZIP larger than `upload_max_filesize`/`post_max_size` or the web server's body limit (e.g. Nginx `client_max_body_size`). |
-| Restore failed | The plugin restores its safety snapshot automatically; the reason appears in Execution Logs and on the dashboard's **Restores** tab. |
+| Restore upload fails immediately | ZIP larger than `upload_max_filesize`/`post_max_size` or the web server's body limit (e.g. Nginx `client_max_body_size`). |
+| Restore failed | The plugin restores its safety snapshot automatically; the reason appears on the **Restore** screen, in **Activity**, and on the dashboard's **Restores** tab. |
 
 ---
 

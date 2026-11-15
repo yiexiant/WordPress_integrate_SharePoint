@@ -1,6 +1,6 @@
 # Software Requirements Specification — WordPress SharePoint Backup Plugin
 
-Document version: 1.4.0
+Document version: 1.5.0
 Review date: 15 November 2026  
 Scope: `plugin/` source; packaged ZIP assessed separately  
 Basis: the original source plus the 1.1.0 selection/restoration and 1.2.0 manual-device/automatic-cloud workflows and regression harness. This document includes the implementation changes made on 11 November 2026.
@@ -17,7 +17,7 @@ The Laravel dashboard in `../dashboard/` and the Python SEO backend are remote b
 
 | Item | Declared or observed requirement |
 |---|---|
-| Plugin identity | WordPress SharePoint Backup Plugin; `SPSYNC_VERSION` 1.4.0 |
+| Plugin identity | WordPress SharePoint Backup Plugin; `SPSYNC_VERSION` 1.5.0 |
 | Declared compatibility | PHP 7.4+, WordPress 6.0+ in entry header; not fully compatibility-tested |
 | Database | WordPress `$wpdb` with MySQL-style SQL |
 | Archive support | ZipArchive preferred; WordPress PclZip fallback |
@@ -34,7 +34,9 @@ Microsoft application permissions and tenant consent must be provisioned externa
 | Path | Responsibility |
 |---|---|
 | `schedule-backup-plugin.php` | Metadata, constants, namespace autoloading, activation and component hooks |
-| `admin/SettingsPage.php` | Seven-tab UI, manual/automatic method selection, device downloads, backup contents, upload/review/restore and diagnostics |
+| `admin/SettingsPage.php` | Admin menu, form/action handlers (nonce + capability), navigation with legacy tab aliases, settings persistence |
+| `admin/StatusSummary.php` | Plain-language status, setup checklist, schedule summary, SharePoint backup list for the admin screens |
+| `admin/views/*.php`, `admin/assets/` | Dashboard, Backups, Restore, Settings and Activity screens; enqueued CSS/JS |
 | `api/RestController.php` | Shared-key authentication and nine remote endpoints |
 | `database/Installer.php` | Four custom tables and initial settings/API key |
 | `database/DatabaseMigrator.php` | URL matching, recursive serialization-aware replacement and cache flushing |
@@ -62,7 +64,7 @@ Microsoft application permissions and tenant consent must be provisioned externa
 | `restore/ManualRestore.php` | Immediate after-response restoration, durable scheduled fallback, destination snapshot and rollback |
 | `tests/run.php` | Isolated regression harness using temporary sites and WordPress/database stubs |
 | `README.md` | Installation, backup-selection and manual-restoration instructions |
-| `schedule_backup_plugin.zip` | Rebuilt 1.4.0 installable package; includes application PHP and README, excludes tests/SRS |
+| `schedule_backup_plugin.zip` | Rebuilt 1.5.0 installable package (`php bin/build-zip.php`); includes application PHP, admin CSS/JS and README; excludes tests, bin, SRS and DEPLOYMENT |
 
 ### Bootstrap detail that affects deployment
 
@@ -317,3 +319,16 @@ Open decisions: supported server/filesystem platforms, backup exclusion policy, 
 **Lifecycle.** Monthly schedules are calendar single events. Deactivation unschedules plugin cron hooks. Activation and version upgrade re-arm the saved schedule.
 
 Validation: 164 isolated regression checks pass (PHP 8.3), covering site-folder derivation and sanitization, isolation from other sites' legacy folders, pagination and untrusted next links, site-folder recreation, verification classification, confirmed-delete retention, manifest validation, SQL binding in URL migration, staging protection, monitoring fields and monthly re-arming. No live SharePoint tenant was used. Validate on a staging site with two websites sharing one root before production use.
+
+## 17. Admin interface redesign in 1.5.0
+
+| ID | Requirement | Implementation |
+|---|---|---|
+| P-FR-33 | Show administrators whether the website is protected, in plain language, with the next action. | `StatusSummary::overall()`: active job, setup needed, SharePoint unreachable (last test), last backup failed, overdue vs schedule (+6 h), automatic backups off, waiting for first backup, protected |
+| P-FR-34 | Guide new installs through setup. | Dashboard checklist: SharePoint connected and tested → automatic schedule → first successful backup |
+| P-FR-35 | List this site's SharePoint backups and restore one from the admin. | Backups screen from `spsync_items` grouped by backup ID; `admin_post_spsync_restore_remote` requires `manage_options`, nonce, explicit confirmation (filled by the confirm dialog) and a valid backup ID, then calls `RestoreManager::start_restore()` |
+| P-FR-36 | Keep settings sections independent. | Schedule and SharePoint save only their own fields; client secret is never rendered and an empty field keeps it; changing the SharePoint location clears cached IDs and the remembered test |
+| P-FR-37 | Offer the stale-lock reset only when relevant. | Shown when `backup_running` is older than 10 minutes (the engine's stale threshold) |
+| P-NFR-12 | Accessible, responsive, WordPress-native presentation. | WordPress buttons/colour scheme, labelled controls, `aria-current`, focus outlines, reduced-motion support, single-column layout below 782 px; forms work without JavaScript |
+
+Navigation: `tab=dashboard|backups|restore|settings|activity` and `section=schedule|contents|sharepoint|dashboard`. Legacy tab names map to the new screens. Validation: 193 isolated regression checks (29 new for the screens, status wording, aliases and remote-restore gates), and every screen rendered without PHP warnings in a real WordPress install.
