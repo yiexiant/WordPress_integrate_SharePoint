@@ -14,7 +14,7 @@
         <p class="font-medium text-slate-900">Before you start</p>
         <ol class="mt-2 list-inside list-decimal space-y-1">
             <li>Install and activate the <strong>SharePoint Backup</strong> plugin on the WordPress site.</li>
-            <li>In WordPress, open <strong>SharePoint Backup → Overview</strong> and copy the <strong>Secret API Key</strong>.</li>
+            <li>In WordPress, open <strong>SharePoint Backup → Settings → Central Dashboard</strong> and click <strong>Copy key</strong>.</li>
         </ol>
     </div>
 

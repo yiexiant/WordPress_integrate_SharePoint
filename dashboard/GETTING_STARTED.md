@@ -90,12 +90,13 @@ Keep both windows open while you use the dashboard. To stop, press **Ctrl + C** 
 
 1. **Install the plugin on the WordPress site:** WordPress admin → Plugins → Add New → Upload Plugin →
    choose `C:\04-backup_plugin\plugin\schedule_backup_plugin.zip` → Activate.
-2. In WordPress, open **SharePoint Backup**:
-   - **Credentials** tab: enter Tenant ID, Client ID, Client Secret, SharePoint Site URL, Document Library and Root
-     Backup Folder. Check the **Site Folder** name: every website needs its own. Save, then **Test Connection**.
-   - **Backup Method & Schedule** tab: choose *Automatic backups to SharePoint* and a schedule.
+2. In WordPress, open **SharePoint Backup**. Its **Dashboard** shows a setup checklist; follow it:
+   - **Settings › SharePoint**: enter Tenant ID, Client ID, Client Secret, the SharePoint site address, document
+     library and main backup folder. Check **This website’s folder**: every website needs its own. Save, then
+     **Test connection**.
+   - **Settings › Schedule**: choose *Automatically, to SharePoint* and a schedule.
      The dashboard only flags *Backup Overdue* for sites with an automatic schedule.
-   - **Overview** tab: copy the **Secret API Key**.
+   - **Settings › Central Dashboard**: click **Copy key**.
 3. In the dashboard, click **Add website**, then enter a name, the site's exact URL (for example `http://mysite.test`)
    and the API key.
 4. On the website's page, click **Check connection**. The status should turn green: **Healthy**, or tell you in plain words what is wrong.

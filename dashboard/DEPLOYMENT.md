@@ -310,7 +310,7 @@ Check it: `php artisan schedule:list` shows both `sites:sync` entries. Run a syn
 
 For each site (plugin installed and configured as described in `../plugin/DEPLOYMENT.md`):
 
-1. WordPress → **SharePoint Backup → Overview & Testing** → copy the **Central Dashboard Secret API Key**.
+1. WordPress → **SharePoint Backup → Settings › Central Dashboard** → **Copy key**.
 2. Dashboard → **Add website** → name, exact public address (with `https://` and `www` if used) and the key.
 3. Click **Check connection** on the website's page. It should turn **Healthy**, or show the exact problem
    (unreachable, key rejected, wrong address, SharePoint sign-in failed, no automatic schedule…).
