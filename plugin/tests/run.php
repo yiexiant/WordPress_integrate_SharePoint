@@ -108,7 +108,9 @@ namespace {
         }
         public function insert($table, $row, $formats = []) { $this->items[] = $row; return 1; }
         public function get_col($sql) { return strpos($sql, 'DISTINCT backup_id') !== false ? $this->backup_ids : ['wp_posts', 'wp_spsync_settings']; }
-        public function get_row($sql, $mode = null) { return ['wp_posts', 'CREATE TABLE `wp_posts` (`id` int)']; }
+        public $row = null;
+        public function prepare($query, ...$args) { return vsprintf(str_replace(['%s', '%d'], ["'%s'", '%d'], $query), $args); }
+        public function get_row($sql, $mode = null) { return $this->row ?? ['wp_posts', 'CREATE TABLE `wp_posts` (`id` int)']; }
         public $pending_uploads = 0;
         public function get_var($sql) {
             if (strpos($sql, "status IN ('queued', 'uploading') AND retries < 3") !== false && strpos($sql, 'COUNT(*)') !== false) { return $this->pending_uploads; }
@@ -521,6 +523,41 @@ namespace {
         $lock::release();
         delete_option('spsync_api_backup_request');
 
+        // --- Cancel an unfinished backup (1.5.1) ---
+        $cancel_id = 'spsync-backup-20261117-114900';
+        $cancel_dir = \SPSync\Helpers\LocalPaths::backup_dir($cancel_id);
+        wp_mkdir_p($cancel_dir);
+        \SPSync\Helpers\LocalPaths::protect($cancel_dir);
+        file_put_contents($cancel_dir . '/backup_part001.zip', 'partial');
+        verify(is_wp_error(BackupEngine::cancel('../etc')), 'Cancel rejects malformed backup IDs.');
+        $wpdb->row = (object) ['total' => 55, 'done' => 55];
+        verify(is_wp_error(BackupEngine::cancel($cancel_id)) && is_dir($cancel_dir), 'A completed backup is never cancelled.');
+        $wpdb->row = (object) ['total' => 55, 'done' => 15];
+        $wpdb->deletes = [];
+        \SPSync\Storage\RemoteInventory::forget();
+        \SPSync\Auth\GraphClient::$responses = [
+            ['value' => [['id' => 'site-1', 'name' => \SPSync\Storage\RemoteInventory::site_folder_name(), 'folder' => []]]],
+            ['value' => [['id' => 'partial-1', 'name' => $cancel_id, 'folder' => []]]],
+            null, // DELETE answers 204 No Content
+        ];
+        $lock::acquire($cancel_id);
+        verify(BackupEngine::cancel($cancel_id) === true, 'An uploading backup can be cancelled.');
+        verify(in_array(['backup_id' => $cancel_id], $wpdb->deletes, true) && !is_dir($cancel_dir), 'Cancelling removes the queue rows and the local copy.');
+        verify(\SPSync\Auth\GraphClient::$responses === [] && !Settings::get('backup_running'), 'Cancelling deletes the partial SharePoint folder and frees its lock.');
+        $wpdb->row = (object) ['total' => 55, 'done' => 0];
+        \SPSync\Auth\GraphClient::$responses = [false];
+        $cancelled = BackupEngine::cancel('spsync-backup-20261117-121100');
+        verify(is_wp_error($cancelled) && strpos($cancelled->get_error_message(), 'by hand') !== false, 'When SharePoint cannot be checked, the admin is told to remove the folder by hand.');
+        $nonce_allowed = false;
+        $_POST = ['backup_id' => 'spsync-backup-20261117-121100'];
+        try { \SPSync\Admin\SettingsPage::handle_cancel_backup(); verify(false, 'Cancel without a nonce was accepted.'); }
+        catch (\RuntimeException $error) { verify($error->getMessage() === 'invalid nonce', 'Cancelling requires a valid nonce.'); }
+        $nonce_allowed = true;
+        $_POST = [];
+        $wpdb->row = null;
+        \SPSync\Auth\GraphClient::$responses = [];
+        \SPSync\Storage\RemoteInventory::forget();
+
         // --- Per-site SharePoint isolation (1.4.0) ---
         $inventory = 'SPSync\\Storage\\RemoteInventory';
         verify($inventory::site_folder_name() === 'shop.example.test-store', 'Site folder defaults to the WordPress host and path.');
@@ -716,6 +753,16 @@ namespace {
             'Back up now is replaced by a disabled button and the reason while a backup is still uploading.');
         verify(strpos($render([]), 'spsync_run_manual_backup') === false, 'The dashboard button is disabled too.');
         $wpdb->pending_uploads = 0;
+        $wpdb->has_tables = true;
+        $wpdb->results = [
+            ['backup_id' => 'spsync-backup-20261117-121100', 'total' => 55, 'done' => 0, 'errors' => 0, 'missing' => 0, 'size' => 2400000000, 'created_at' => '2026-11-17 04:11:00'],
+            ['backup_id' => 'spsync-backup-20261116-020000', 'total' => 55, 'done' => 55, 'errors' => 0, 'missing' => 0, 'size' => 2400000000, 'created_at' => '2026-11-16 02:00:00'],
+        ];
+        $list_html = $render(['tab' => 'backups']);
+        verify(substr_count($list_html, 'value="spsync_cancel_backup"') === 1 && strpos($list_html, 'value="spsync-backup-20261117-121100"') !== false,
+            'Only the unfinished backup offers Cancel; the completed one offers Restore.');
+        $wpdb->results = [];
+        $wpdb->has_tables = false;
         Settings::set('backup_frequency', 'daily');
         $recent = ['id' => 'spsync-backup-x', 'time' => time() - 3600, 'files' => 3, 'uploaded' => 3, 'size' => 2048, 'state' => 'completed'];
         verify(\SPSync\Admin\StatusSummary::overall([$recent])['level'] === 'ok', 'A recent successful backup on a schedule is "protected".');

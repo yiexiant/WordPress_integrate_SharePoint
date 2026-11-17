@@ -64,7 +64,11 @@ class SharePointStorage
         if ($filesize < $four_mb) {
             $result = self::upload_small_file($filepath, $remote_folder_id);
         } else {
-            $result = self::upload_large_file($filepath, $remote_folder_id);
+            // Stop between chunks if the backup was cancelled (its queue row is gone).
+            $still_wanted = function () use ($wpdb, $table, $item) {
+                return (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $table WHERE id = %d", $item->id)) > 0;
+            };
+            $result = self::upload_large_file($filepath, $remote_folder_id, $still_wanted);
         }
 
         if ($result && !empty($result['id'])) {
@@ -219,7 +223,7 @@ class SharePointStorage
      * @param string $folder_id Remote parent folder ID.
      * @return array|false JSON response on success, false on failure.
      */
-    public static function upload_large_file($filepath, $folder_id)
+    public static function upload_large_file($filepath, $folder_id, $still_wanted = null)
     {
         $drive_id = GraphClient::get_drive_id();
         if (!$drive_id) {
@@ -265,6 +269,11 @@ class SharePointStorage
         $result_data = null;
 
         while ($offset < $filesize && $success) {
+            if ($still_wanted && !$still_wanted()) {
+                Logger::info('Upload stopped: the backup was cancelled.', ['file' => $filename]);
+                $success = false;
+                break;
+            }
             $bytes_to_read = min($chunk_size, $filesize - $offset);
             $chunk_data = fread($handle, $bytes_to_read);
             

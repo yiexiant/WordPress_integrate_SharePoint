@@ -56,6 +56,61 @@ class BackupEngine
     }
 
     /**
+     * Cancel an unfinished SharePoint backup (still uploading, or failed) and remove every trace of it:
+     * its upload queue, the local working copy and the partial folder on SharePoint.
+     * Completed backups are never touched here; retention manages those.
+     *
+     * @return true|\WP_Error
+     */
+    public static function cancel($backup_id)
+    {
+        global $wpdb;
+        if (!is_string($backup_id) || !preg_match('/\Aspsync-backup-[0-9]{8}-[0-9]{6}\z/D', $backup_id)) {
+            return new \WP_Error('invalid_backup', 'Unknown backup.');
+        }
+        $table = $wpdb->prefix . 'spsync_items';
+        $counts = $wpdb->get_row($wpdb->prepare(
+            "SELECT COUNT(*) AS total, SUM(status = 'done') AS done FROM $table WHERE backup_id = %s",
+            $backup_id
+        ));
+        if (!$counts || (int) $counts->total === 0) {
+            return new \WP_Error('invalid_backup', 'This backup is not in the upload list any more.');
+        }
+        if ((int) $counts->done === (int) $counts->total) {
+            return new \WP_Error('backup_complete', 'This backup is already complete on SharePoint, so it was not cancelled.');
+        }
+
+        // Removing the queue rows first stops the uploader: it checks its row before every chunk.
+        $wpdb->delete($table, ['backup_id' => $backup_id], ['%s']);
+        \SPSync\Helpers\LocalPaths::remove_backup($backup_id);
+
+        // A failed listing is not "nothing to delete": report it so the admin can check by hand.
+        $remote = \SPSync\Storage\RemoteInventory::backups([$backup_id]);
+        $remote_removed = $remote !== false;
+        if ($remote_removed && isset($remote[$backup_id])) {
+            $drive_id = \SPSync\Auth\GraphClient::get_drive_id();
+            $remote_removed = $drive_id && \SPSync\Auth\GraphClient::request(sprintf('drives/%s/items/%s', $drive_id, $remote[$backup_id]['id']), 'DELETE') !== false;
+        }
+
+        // Only this backup's own lock; another backup may be archiving right now. A lock left by an
+        // older plugin version carries no ID: release it once nothing is left to upload.
+        $holder = BackupLock::current_id();
+        if ($holder === $backup_id || ($holder === '' && BackupLock::pending_uploads() === 0)) {
+            BackupLock::release();
+        }
+        Logger::warning('Backup cancelled by an administrator.', [
+            'backup_id'        => $backup_id,
+            'uploaded_files'   => (int) $counts->done,
+            'total_files'      => (int) $counts->total,
+            'sharepoint_clean' => $remote_removed,
+        ]);
+        if (!$remote_removed) {
+            return new \WP_Error('remote_cleanup', 'The backup was cancelled, but its partial folder on SharePoint could not be deleted. Remove the folder ' . $backup_id . ' there by hand.');
+        }
+        return true;
+    }
+
+    /**
      * Start the backup process orchestration.
      *
      * @return string|false Backup ID on success, or false on failure.

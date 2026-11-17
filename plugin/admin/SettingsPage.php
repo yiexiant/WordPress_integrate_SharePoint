@@ -21,6 +21,7 @@ class SettingsPage
         add_action('admin_post_spsync_test_connection', [ __CLASS__, 'handle_connection_test' ]);
         add_action('admin_post_spsync_run_manual_backup', [ __CLASS__, 'handle_manual_backup' ]);
         add_action('admin_post_spsync_reset_lock', [ __CLASS__, 'handle_reset_lock' ]);
+        add_action('admin_post_spsync_cancel_backup', [__CLASS__, 'handle_cancel_backup']);
         add_action('admin_post_spsync_save_contents', [__CLASS__, 'handle_save_contents']);
         add_action('admin_post_spsync_upload_backup', [__CLASS__, 'handle_upload_backup']);
         add_action('admin_post_spsync_restore_uploaded', [__CLASS__, 'handle_restore_uploaded']);
@@ -285,6 +286,24 @@ class SettingsPage
             self::redirect_notice('backups', false, $backup_id->get_error_message());
         }
         self::redirect_notice('backups', true, 'Backup started. It is created and uploaded to SharePoint in the background, so you can leave this page; the list below shows the progress.');
+    }
+
+    /**
+     * Cancel an unfinished backup from the Backups list (e.g. one started by an accidental extra click).
+     */
+    public static function handle_cancel_backup()
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die(__('You do not have permission to access this page.', 'schedule-backup-plugin'));
+        }
+        check_admin_referer('spsync_cancel_backup');
+
+        $backup_id = isset($_POST['backup_id']) ? sanitize_text_field(wp_unslash($_POST['backup_id'])) : '';
+        $result = \SPSync\Backup\BackupEngine::cancel($backup_id);
+        if (is_wp_error($result)) {
+            self::redirect_notice('backups', false, $result->get_error_message());
+        }
+        self::redirect_notice('backups', true, 'The backup was cancelled and its files were removed from this server and from SharePoint.');
     }
 
     /**

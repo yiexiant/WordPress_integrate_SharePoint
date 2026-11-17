@@ -405,3 +405,7 @@
 @media (prefers-reduced-motion: reduce) {
     .spsync-spinner { animation: none; }
 }
+
+/* Destructive secondary action (cancel an unfinished backup). */
+.spsync .button.spsync-button-danger { color: var(--spsync-critical); border-color: var(--spsync-critical); }
+.spsync .button.spsync-button-danger:hover, .spsync .button.spsync-button-danger:focus { background: var(--spsync-critical-bg); color: var(--spsync-critical-text); border-color: var(--spsync-critical); }

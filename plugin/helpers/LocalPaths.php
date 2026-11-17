@@ -48,6 +48,33 @@ class LocalPaths
         return self::base() . '/' . $backup_id;
     }
 
+    /**
+     * Delete the local working copy of one backup (current and pre-1.4.0 locations).
+     *
+     * @return bool True if a directory was removed.
+     */
+    public static function remove_backup($backup_id)
+    {
+        if (!is_string($backup_id) || !preg_match('/\Aspsync-backup-[A-Za-z0-9_-]{1,80}\z/D', $backup_id)) {
+            return false;
+        }
+        $removed = false;
+        foreach ([self::backup_dir($backup_id), self::legacy_backup_dir($backup_id)] as $dir) {
+            if (!is_dir($dir) || is_link($dir)) {
+                continue;
+            }
+            // Backups are flat: archive parts, database.sql, manifest.json and the protection files.
+            foreach ((array) @scandir($dir) as $name) {
+                $file = $dir . '/' . $name;
+                if ($name !== '.' && $name !== '..' && (is_file($file) || is_link($file))) {
+                    @unlink($file);
+                }
+            }
+            $removed = @rmdir($dir) || $removed;
+        }
+        return $removed;
+    }
+
     public static function restore_dir()
     {
         return self::private_root() . '/restore';

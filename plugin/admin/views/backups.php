@@ -121,6 +121,15 @@ $contents_label = $contents['mode'] === 'full'
                                         <?php wp_nonce_field('spsync_restore_remote'); ?>
                                         <button type="submit" class="button">Restore</button>
                                     </form>
+                                <?php elseif (in_array($backup['state'], ['uploading', 'failed'], true)) : ?>
+                                    <?php $cancel_label = $backup['state'] === 'uploading' ? 'Cancel' : 'Remove'; ?>
+                                    <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>"
+                                          data-spsync-confirm="<?php echo esc_attr($cancel_label . ' the unfinished backup from ' . StatusSummary::when($backup['time']) . '?' . "\n\n" . 'Its files are deleted from this server and from SharePoint. Your website is not changed.'); ?>">
+                                        <input type="hidden" name="action" value="spsync_cancel_backup" />
+                                        <input type="hidden" name="backup_id" value="<?php echo esc_attr($backup['id']); ?>" />
+                                        <?php wp_nonce_field('spsync_cancel_backup'); ?>
+                                        <button type="submit" class="button spsync-button-danger" data-spsync-busy="Cancelling…"><?php echo esc_html($cancel_label); ?></button>
+                                    </form>
                                 <?php endif; ?>
                             </td>
                         </tr>
