@@ -195,6 +195,18 @@ namespace {
     function home_url($path = '') { return 'https://shop.example.test/store' . $path; }
     function wp_parse_url($url, $component = -1) { return parse_url($url, $component); }
     function wp_safe_redirect($url) { throw new \RuntimeException('redirect:' . $url); }
+    // Scripted HTTP: each call takes the next reply from $http_replies and is recorded in $http_log.
+    $http_replies = [];
+    $http_log = [];
+    function wp_remote_request($url, $args = []) {
+        global $http_replies, $http_log;
+        $http_log[] = [$args['method'] ?? 'GET', $args['headers']['Content-Range'] ?? null, isset($args['body']) ? strlen($args['body']) : 0];
+        return array_shift($http_replies) ?? new WP_Error('http', 'no scripted reply');
+    }
+    function wp_remote_get($url, $args = []) { return wp_remote_request($url, ['method' => 'GET'] + $args); }
+    function wp_remote_retrieve_response_code($response) { return $response['code']; }
+    function wp_remote_retrieve_body($response) { return json_encode($response['body'] ?? null); }
+    function wp_remote_retrieve_header($response, $name) { return $response['headers'][$name] ?? ''; }
 
     require dirname(__DIR__) . '/schedule-backup-plugin.php';
 
@@ -557,6 +569,46 @@ namespace {
         $wpdb->row = null;
         \SPSync\Auth\GraphClient::$responses = [];
         \SPSync\Storage\RemoteInventory::forget();
+
+        // --- Faster, resumable chunk uploads (1.5.1) ---
+        $storage = 'SPSync\\Storage\\SharePointStorage';
+        $mib = 1048576;
+        verify($storage::chunk_size() === 10 * $mib, 'Uploads use 10 MiB chunks by default.');
+        $filter_values['spsync_upload_chunk_bytes'] = 100 * $mib;
+        verify($storage::chunk_size() === 191 * 327680 && $storage::chunk_size() < 60 * $mib, 'Chunks are capped below the 60 MiB request limit.');
+        $filter_values['spsync_upload_chunk_bytes'] = 5 * $mib + 12345;
+        verify($storage::chunk_size() % 327680 === 0 && $storage::chunk_size() === 16 * 327680, 'Chunk sizes are rounded down to a multiple of 320 KiB.');
+        unset($filter_values['spsync_upload_chunk_bytes']);
+        verify($storage::next_expected_offset(['nextExpectedRanges' => ['26-']], 0, 128) === 26 && $storage::next_expected_offset(['nextExpectedRanges' => ['500-']], false, 128) === false,
+            'Resume offsets come from nextExpectedRanges and must lie inside the file.');
+
+        $big = $fixture . '/backup_part001.zip';
+        file_put_contents($big, str_repeat('x', 25 * $mib));
+        \SPSync\Auth\GraphClient::$responses = [['uploadUrl' => 'https://up.example/session']];
+        $http_log = [];
+        $http_replies = [
+            ['code' => 202, 'body' => ['nextExpectedRanges' => ['10485760-']]],
+            ['code' => 503, 'headers' => ['retry-after' => '1']],              // transient: retried
+            ['code' => 416],                                                    // range already stored
+            ['code' => 200, 'body' => ['nextExpectedRanges' => ['20971520-']]], // session status
+            ['code' => 201, 'body' => ['id' => 'file-1']],
+        ];
+        $uploaded = $storage::upload_large_file($big, 'folder-1');
+        $ranges = array_column($http_log, 1);
+        verify(is_array($uploaded) && $uploaded['id'] === 'file-1', 'A 25 MiB part uploads through 503 and 416 replies: ' . json_encode($http_log));
+        verify($ranges === ['bytes 0-10485759/26214400', 'bytes 10485760-20971519/26214400', 'bytes 10485760-20971519/26214400', null, 'bytes 20971520-26214399/26214400'],
+            'Chunks are 10 MiB, a 503 retries the same range, and a 416 resumes where SharePoint asks: ' . json_encode($ranges));
+        \SPSync\Auth\GraphClient::$responses = [['uploadUrl' => 'https://up.example/session']];
+        $http_log = [];
+        $http_replies = [['code' => 403, 'body' => ['error' => ['message' => 'denied']]], ['code' => 204]];
+        verify($storage::upload_large_file($big, 'folder-1') === false && end($http_log)[0] === 'DELETE' && count($http_log) === 2,
+            'A permanent error is not retried and the upload session is deleted.');
+        \SPSync\Auth\GraphClient::$responses = [['uploadUrl' => 'https://up.example/session']];
+        $http_log = [];
+        $http_replies = [];
+        verify($storage::upload_large_file($big, 'folder-1', function () { return false; }) === false && $http_log[0][0] === 'DELETE',
+            'A cancelled backup sends no further chunks.');
+        unlink($big);
 
         // --- Per-site SharePoint isolation (1.4.0) ---
         $inventory = 'SPSync\\Storage\\RemoteInventory';

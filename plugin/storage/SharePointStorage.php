@@ -11,6 +11,14 @@ if (!defined('ABSPATH')) {
 
 class SharePointStorage
 {
+    /** Upload ranges must be multiples of 320 KiB. */
+    const CHUNK_UNIT = 327680;
+    /** 32 x 320 KiB = 10 MiB per request (was 3.2 MiB: three times the requests for the same data). */
+    const DEFAULT_CHUNK_UNITS = 32;
+    /** 191 x 320 KiB stays below Microsoft's 60 MiB per-request limit. */
+    const MAX_CHUNK_UNITS = 191;
+    const MAX_CHUNK_RETRIES = 5;
+
     /**
      * Upload a single queue item from wp_spsync_items.
      *
@@ -249,9 +257,7 @@ class SharePointStorage
 
         $upload_url = $session_data['uploadUrl'];
         $filesize = filesize($filepath);
-
-        // Chunk size: 3.2 MB (10 * 327,680 bytes) - optimal size to prevent timeouts on variable connections
-        $chunk_size = 10 * 327680; // 3,276,800 bytes
+        $chunk_size = self::chunk_size();
 
         $handle = fopen($filepath, 'rb');
         if (!$handle) {
@@ -260,8 +266,9 @@ class SharePointStorage
         }
 
         Logger::info("Created SharePoint upload session. Pushing chunks...", [
-            'file' => $filename,
-            'size' => size_format($filesize)
+            'file'  => $filename,
+            'size'  => size_format($filesize),
+            'chunk' => size_format($chunk_size),
         ]);
 
         $offset = 0;
@@ -274,77 +281,75 @@ class SharePointStorage
                 $success = false;
                 break;
             }
+            \SPSync\Helpers\BackupLock::heartbeat();
+
             $bytes_to_read = min($chunk_size, $filesize - $offset);
+            fseek($handle, $offset);
             $chunk_data = fread($handle, $bytes_to_read);
-            
+            if ($chunk_data === false || strlen($chunk_data) !== $bytes_to_read) {
+                Logger::error('Could not read the next chunk of the local file.', ['file' => $filename, 'offset' => $offset]);
+                $success = false;
+                break;
+            }
             $start = $offset;
             $end = $offset + $bytes_to_read - 1;
-            
-            // Try uploading chunk (max 3 retries on network transient issues)
-            $chunk_success = false;
-            $retries = 0;
-            
-            while (!$chunk_success && $retries < 3) {
-                $args = [
+
+            // Network errors, 5xx and throttling are retried with back-off (Microsoft's guidance);
+            // other errors are not.
+            $attempt = 0;
+            while (true) {
+                $response = wp_remote_request($upload_url, [
                     'method'    => 'PUT',
                     'headers'   => [
-                        'Content-Length' => $bytes_to_read,
-                        'Content-Range'  => sprintf('bytes %d-%d/%d', $start, $end, $filesize),
-                        'Content-Type'   => 'application/octet-stream'
+                        'Content-Range' => sprintf('bytes %d-%d/%d', $start, $end, $filesize),
+                        'Content-Type'  => 'application/octet-stream',
                     ],
                     'body'      => $chunk_data,
-                    'timeout'   => 120, // Increased timeout to prevent cURL error 28
-                    'sslverify' => true
-                ];
-
-                $response = wp_remote_request($upload_url, $args);
-                
-                if (is_wp_error($response)) {
-                    $retries++;
-                    Logger::warning("Chunk upload network failure (Attempt $retries): " . $response->get_error_message(), [
-                        'file' => $filename,
-                        'range'=> "$start-$end"
-                    ]);
-                    sleep($retries * 2); // Exponential backoff pause
-                    continue;
-                }
-
-                $code = wp_remote_retrieve_response_code($response);
-                $resp_body = wp_remote_retrieve_body($response);
-                $resp_data = json_decode($resp_body, true);
+                    'timeout'   => 180,
+                    'sslverify' => true,
+                ]);
+                $code = is_wp_error($response) ? 0 : (int) wp_remote_retrieve_response_code($response);
+                $resp_data = is_wp_error($response) ? null : json_decode(wp_remote_retrieve_body($response), true);
 
                 if ($code === 200 || $code === 201) {
-                    // Upload completed successfully on the final chunk
-                    $chunk_success = true;
                     $result_data = $resp_data;
-                } elseif ($code === 202) {
-                    // Chunk accepted (session active, expect more chunks)
-                    $chunk_success = true;
-                } elseif ($code === 429) {
-                    // Throttling
-                    $retries++;
-                    $retry_after = isset($response['headers']['retry-after']) ? (int) $response['headers']['retry-after'] : 5;
-                    Logger::warning("Throttled by Microsoft Graph (429). Retrying after $retry_after seconds.", [ 'file' => $filename ]);
-                    sleep($retry_after);
-                } else {
-                    // Unrecoverable chunk writing error
-                    Logger::error("Chunk upload failed with HTTP code $code.", [
-                        'file'    => $filename,
-                        'range'   => "$start-$end",
-                        'response'=> $resp_data
+                    $offset = $filesize;
+                    break;
+                }
+                if ($code === 202) {
+                    // Continue where SharePoint says it wants the next bytes.
+                    $offset = self::next_expected_offset($resp_data, $end + 1, $filesize);
+                    break;
+                }
+                if ($code === 416) {
+                    // This range already arrived (the reply to an earlier try was lost): ask where to resume.
+                    $resume = self::next_expected_offset(self::session_status($upload_url), false, $filesize);
+                    if ($resume === false) {
+                        $success = false;
+                    } else {
+                        $offset = $resume;
+                    }
+                    break;
+                }
+                if (++$attempt > self::MAX_CHUNK_RETRIES || !($code === 0 || $code === 429 || $code >= 500)) {
+                    Logger::error('Chunk upload failed.', [
+                        'file'     => $filename,
+                        'range'    => "$start-$end",
+                        'http'     => $code ?: $response->get_error_message(),
+                        'response' => $resp_data,
                     ]);
                     $success = false;
                     break;
                 }
+                $retry_after = is_wp_error($response) ? 0 : (int) wp_remote_retrieve_header($response, 'retry-after');
+                $wait = $retry_after > 0 ? min($retry_after, 120) : min(2 ** $attempt, 30);
+                Logger::warning("Chunk upload interrupted (attempt $attempt); retrying in {$wait}s.", [
+                    'file'  => $filename,
+                    'range' => "$start-$end",
+                    'http'  => $code ?: $response->get_error_message(),
+                ]);
+                sleep($wait);
             }
-
-            if (!$chunk_success) {
-                Logger::error("Chunk upload failed after maximum retries.", [ 'file' => $filename, 'range' => "$start-$end" ]);
-                $success = false;
-                break;
-            }
-
-            $offset += $bytes_to_read;
         }
 
         fclose($handle);
@@ -356,5 +361,44 @@ class SharePointStorage
         }
 
         return $result_data;
+    }
+
+    /**
+     * Bytes per upload request: 10 MiB by default, Microsoft's recommended size for stable connections.
+     * Always a multiple of 320 KiB and below the 60 MiB per-request limit (filter: spsync_upload_chunk_bytes).
+     */
+    public static function chunk_size()
+    {
+        $bytes = (int) apply_filters('spsync_upload_chunk_bytes', self::DEFAULT_CHUNK_UNITS * self::CHUNK_UNIT);
+        $units = max(1, min(self::MAX_CHUNK_UNITS, intdiv($bytes, self::CHUNK_UNIT)));
+        return $units * self::CHUNK_UNIT;
+    }
+
+    /**
+     * Start of the first range SharePoint still expects ("nextExpectedRanges": ["26-"]).
+     *
+     * @param array|null $data     Upload session response.
+     * @param int|false  $fallback Value when the response names no usable range.
+     * @return int|false
+     */
+    public static function next_expected_offset($data, $fallback, $filesize)
+    {
+        if (is_array($data) && !empty($data['nextExpectedRanges'][0]) && preg_match('/\A(\d+)-/', (string) $data['nextExpectedRanges'][0], $m)) {
+            $start = (int) $m[1];
+            if ($start >= 0 && $start < $filesize) {
+                return $start;
+            }
+        }
+        return $fallback;
+    }
+
+    /** @return array|null The upload session's current status (which ranges are still missing). */
+    private static function session_status($upload_url)
+    {
+        $response = wp_remote_get($upload_url, ['timeout' => 30, 'sslverify' => true]);
+        if (is_wp_error($response) || (int) wp_remote_retrieve_response_code($response) !== 200) {
+            return null;
+        }
+        return json_decode(wp_remote_retrieve_body($response), true);
     }
 }
