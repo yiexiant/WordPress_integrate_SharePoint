@@ -1,6 +1,6 @@
 # Software Requirements Specification — WordPress SharePoint Backup Plugin
 
-Document version: 1.5.0
+Document version: 1.5.1
 Review date: 15 November 2026  
 Scope: `plugin/` source; packaged ZIP assessed separately  
 Basis: the original source plus the 1.1.0 selection/restoration and 1.2.0 manual-device/automatic-cloud workflows and regression harness. This document includes the implementation changes made on 11 November 2026.
@@ -17,7 +17,7 @@ The Laravel dashboard in `../dashboard/` and the Python SEO backend are remote b
 
 | Item | Declared or observed requirement |
 |---|---|
-| Plugin identity | WordPress SharePoint Backup Plugin; `SPSYNC_VERSION` 1.5.0 |
+| Plugin identity | WordPress SharePoint Backup Plugin; `SPSYNC_VERSION` 1.5.1 |
 | Declared compatibility | PHP 7.4+, WordPress 6.0+ in entry header; not fully compatibility-tested |
 | Database | WordPress `$wpdb` with MySQL-style SQL |
 | Archive support | ZipArchive preferred; WordPress PclZip fallback |
@@ -81,12 +81,12 @@ Namespaces use capitalized components (`SPSync\Database`, `SPSync\Api`, etc.), w
 | P-FR-05 | Retrieve a Microsoft client-credentials token, cache it with an expiry buffer, resolve SharePoint site/drive/folder, and create missing root folder. | Implemented — OAuth/Graph client |
 | P-FR-06 | Export table structure/data for tables matching the active WordPress prefix using 500-row fetch batches. | Implemented — database backup; no transaction snapshot guarantee |
 | P-FR-07 | Scan the WordPress installation, excluding backup/cache/temp/log directories and archive/log/temp extensions. | Implemented — file scanner |
-| P-FR-08 | Build independent ZIP parts from groups targeting 52,428,800 input bytes, with ZipArchive or PclZip. | Implemented — zip builder; individual oversized files are not split |
+| P-FR-08 | Build independent ZIP parts from groups targeting 52,428,800 input bytes, with ZipArchive or PclZip. | Implemented — zip builder; individual oversized files are not split; already-compressed formats stored (CM_STORE) since 1.5.1 |
 | P-FR-09 | Produce the selected SQL/ZIP components and a manifest with selection metadata, per-part sizes and SHA-256 hashes; enqueue every component including manifest. | Implemented — backup engine; full website/database remains default |
-| P-FR-10 | Prevent ordinary overlapping backups using a timestamp lock, considering locks older than ten minutes stale. | Partial — non-atomic lock; normal admin backup no longer forcibly overrides it; explicit reset action remains |
-| P-FR-11 | Process upload batches, default five files, using Action Scheduler or WP-Cron. | Implemented — queue manager |
-| P-FR-12 | Upload files below 4 MiB directly; use 3,276,800-byte chunks for larger files. | Implemented — storage |
-| P-FR-13 | Retry chunk network/throttle failures and retry whole-file attempts, marking permanent failure. | Partial — some early errors bypass retries |
+| P-FR-10 | Allow only one backup at a time. | Implemented (1.5.1) — `BackupLock`: atomic heartbeat lock (stale after 30 min without progress), refused while uploads are pending, atomic start reservation; see §18 |
+| P-FR-11 | Process the upload queue continuously using Action Scheduler or WP-Cron. | Implemented (1.5.1) — single runner, 150 s time budget per run, self-rescheduling, admin watchdog |
+| P-FR-12 | Upload files below 4 MiB directly; use upload-session chunks for larger files. | Implemented (1.5.1) — 10 MiB chunks (32 × 320 KiB), filterable, capped below 60 MiB |
+| P-FR-13 | Retry chunk network/throttle failures and retry whole-file attempts, marking permanent failure. | Implemented (1.5.1) — network, 429 and 5xx retried with back-off/Retry-After; 416 resumes from `nextExpectedRanges`; session creation failures still use whole-file retries |
 | P-FR-14 | Remove local backup files after successful queue completion and enforce retention. | Implemented (1.4.0) — finalized per backup from all its rows; failed components keep the local copy |
 | P-FR-15 | Schedule manual, daily, weekly, monthly and one-time backups at a selected WordPress-local start time. | Implemented (1.4.0) — monthly is a calendar-day single event re-armed after each run |
 | P-FR-16 | Expose health, diagnostics, latest backup status, logs and remote connection test behind shared-key authentication. | Implemented — REST controller |
@@ -328,7 +328,29 @@ Validation: 164 isolated regression checks pass (PHP 8.3), covering site-folder 
 | P-FR-34 | Guide new installs through setup. | Dashboard checklist: SharePoint connected and tested → automatic schedule → first successful backup |
 | P-FR-35 | List this site's SharePoint backups and restore one from the admin. | Backups screen from `spsync_items` grouped by backup ID; `admin_post_spsync_restore_remote` requires `manage_options`, nonce, explicit confirmation (filled by the confirm dialog) and a valid backup ID, then calls `RestoreManager::start_restore()` |
 | P-FR-36 | Keep settings sections independent. | Schedule and SharePoint save only their own fields; client secret is never rendered and an empty field keeps it; changing the SharePoint location clears cached IDs and the remembered test |
-| P-FR-37 | Offer the stale-lock reset only when relevant. | Shown when `backup_running` is older than 10 minutes (the engine's stale threshold) |
+| P-FR-37 | Offer the stale-lock reset only when relevant. | Shown when the backup lock has had no heartbeat for 30 minutes (1.5.1) |
 | P-NFR-12 | Accessible, responsive, WordPress-native presentation. | WordPress buttons/colour scheme, labelled controls, `aria-current`, focus outlines, reduced-motion support, single-column layout below 782 px; forms work without JavaScript |
 
 Navigation: `tab=dashboard|backups|restore|settings|activity` and `section=schedule|contents|sharepoint|dashboard`. Legacy tab names map to the new screens. Validation: 193 isolated regression checks (29 new for the screens, status wording, aliases and remote-restore gates), and every screen rendered without PHP warnings in a real WordPress install.
+
+## 18. One backup at a time and upload throughput in 1.5.1
+
+Field report: on a 2.5 GB WooCommerce site, three clicks on "Back up now" (11:37, 11:49, 12:11) produced three parallel 2.3 GB backups of 55 parts each, and the first had uploaded only 15 of 55 parts after 44 minutes.
+
+Causes found in source:
+
+1. The lock was considered stale after a fixed 10 minutes, while archiving and uploading 2.3 GB takes far longer, so every click more than 10 minutes after the previous one started a new backup. The admin button also ran the whole archive build inside the click request, keeping the browser waiting.
+2. `QueueManager::is_already_scheduled()` used `as_next_scheduled_action()`, which also returns true for the action that is currently running. The follow-up upload run was therefore never enqueued and the queue stopped after each batch of 5 files until something else (another backup) triggered it — 3 clicks × 5 files = the 15 uploaded parts.
+
+| ID | Requirement | Implementation |
+|---|---|---|
+| P-FR-38 | Never run two SharePoint backups in parallel. | `Helpers\BackupLock`: `backup_running` holds the last heartbeat (archiving per part, uploading per chunk/file); stale only after 30 min of silence; taken with `INSERT IGNORE` / compare-and-set on the `spsync_settings` primary key; a new SharePoint backup is refused while any upload row is pending |
+| P-FR-39 | Start manual and remote backups in the background, once. | `BackupEngine::request()` (admin button and `POST backup/start`): atomic `backup_starting` critical section, busy check, `spsync_api_backup_request` reservation, Action Scheduler/WP-Cron worker; a re-delivered worker for the running backup exits without restarting or failing it |
+| P-FR-40 | Tell the administrator why a backup cannot start. | `BackupLock::busy_reason()`; Back up now is replaced by a disabled button with the reason; forms ignore double submits |
+| P-FR-41 | Cancel an unfinished backup. | Backups list Cancel/Remove (`admin_post_spsync_cancel_backup`, `manage_options`, nonce, confirmation) → `BackupEngine::cancel()`: deletes queue rows, `LocalPaths::remove_backup()`, deletes the partial SharePoint folder (reports a listing/delete failure), releases its own lock; completed backups are refused; the uploader checks its row before each chunk |
+| P-FR-42 | Keep the upload queue moving. | Only pending actions count as "scheduled"; one runner (`queue_runner` lock) uploads until a 150 s budget (`spsync_upload_time_budget`) then reschedules; `admin_init` watchdog (once a minute) resumes a queue with pending rows and no run |
+| P-NFR-13 | Use Microsoft's upload guidance. | 10 MiB chunks (multiple of 320 KiB, < 60 MiB, `spsync_upload_chunk_bytes`); no Authorization header on `uploadUrl`; retries for network/429/5xx with back-off; 416 → `GET uploadUrl` and resume; follow `nextExpectedRanges` |
+
+Microsoft limits (Graph v1.0 documentation, checked 17 Nov 2026): simple `PUT …/content` up to 250 MB per file; upload-session requests must each be under 60 MiB and multiples of 320 KiB (except the last), with 5–10 MiB recommended and 10 MiB optimal on stable connections; fragments must be sent in order. Entra ID only issues the access token and imposes no upload size limit.
+
+Validation: 222 isolated regression checks (29 new: lock acquisition/stale takeover, pending-upload refusal, double-click on Back up now, re-delivered worker, disabled buttons, cancel paths and nonce, chunk sizing, 503/416 resume, permanent-error abort, cancellation mid-upload, CM_STORE). `QueueManager` is stubbed in the harness, so the time-boxed runner, runner lock and watchdog are verified by review only; validate them on a staging site with Action Scheduler before production.

@@ -1,6 +1,6 @@
 # WordPress SharePoint Backup Plugin
 
-Version 1.5.0. Install `schedule_backup_plugin.zip` through WordPress **Plugins → Add New → Upload Plugin**, then open **SharePoint Backup**.
+Version 1.5.1. Install `schedule_backup_plugin.zip` through WordPress **Plugins → Add New → Upload Plugin**, then open **SharePoint Backup**.
 
 > **Production rollout** (Entra ID app registration, Graph permissions, server cron, Nginx rule, verification, upgrades): see [DEPLOYMENT.md](DEPLOYMENT.md).
 
@@ -19,8 +19,10 @@ Open **SharePoint Backup** in the WordPress menu:
   and **Central Dashboard** (show and copy the API key).
 - **Activity**: everything the plugin did, in your timezone, with a **Problems only** filter.
 
-Screens refresh themselves while a backup or restore runs. If a backup has been stuck for over 10 minutes, a
-**Clear stuck backup** button appears at the top.
+Screens refresh themselves while a backup or restore runs. Only one backup runs at a time: while one is being
+created or uploaded, **Back up now** is disabled and says why. An unfinished backup (for example one started by an
+extra click) can be removed with **Cancel** in the Backups list; this deletes its files here and on SharePoint.
+If a backup shows no progress for 30 minutes, a **Clear stuck backup** button appears at the top.
 
 ## Connect another dashboard through the API
 
@@ -152,6 +154,21 @@ The harness uses temporary fixture files and WordPress/database stubs. It does n
 - `backup/status` adds `last_successful_backup`, `schedule` (frequency, next run), `site_folder`, `plugin_version` and `restore.error`. `health` and `system/info` add `site_url` and `site_folder`.
 - Monthly schedules stay on the chosen calendar day. Deactivation clears cron events; activation and upgrade restore them.
 - Changing the library or root folder clears cached SharePoint IDs.
+
+## Release notes — 1.5.1
+
+- **One backup at a time.** The running-backup lock now lives as long as the backup shows progress (stale only after
+  30 minutes of silence, previously a fixed 10 minutes), and no new backup starts while an earlier one still has
+  files to upload. Starting is atomic, so double clicks or two dashboards clicking together start a single backup.
+- **Back up now runs in the background** and returns at once; the button is disabled with the reason while busy.
+- **Cancel an unfinished backup** from the Backups list: removes its upload queue, local copy and partial SharePoint folder.
+- **Uploads no longer stall.** With Action Scheduler (e.g. WooCommerce) the queue stopped after every 5 files until
+  another backup restarted it. One upload run now keeps sending files for up to 150 s and then schedules the next;
+  a single active run is guaranteed and an admin-side watchdog resumes a stalled queue.
+- **10 MiB upload chunks** (Microsoft’s recommended size, was 3.2 MiB); network errors, 429 and 5xx are retried with
+  back-off, and interrupted chunks resume from SharePoint’s `nextExpectedRanges`.
+- **Faster archiving:** photos, video, audio, archives and fonts are stored in the ZIP parts without re-compression.
+- Filters: `spsync_upload_chunk_bytes`, `spsync_upload_time_budget`.
 
 ## Release notes — 1.5.0
 
