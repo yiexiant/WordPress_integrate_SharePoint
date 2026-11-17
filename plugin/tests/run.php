@@ -7,6 +7,16 @@ namespace SPSync\Helpers {
         public static function get($key, $default = '') { return self::$values[$key] ?? $default; }
         public static function set($key, $value) { self::$values[$key] = $value; return true; }
         public static function delete($key) { unset(self::$values[$key]); return true; }
+        public static function add($key, $value) {
+            if (isset(self::$values[$key])) { return false; }
+            self::$values[$key] = (string) $value;
+            return true;
+        }
+        public static function replace_if($key, $expected, $value) {
+            if (!isset(self::$values[$key]) || (string) self::$values[$key] !== (string) $expected) { return false; }
+            self::$values[$key] = (string) $value;
+            return true;
+        }
     }
 }
 namespace SPSync\Logger {
@@ -66,8 +76,10 @@ namespace {
 
     class WP_Error
     {
+        private $code;
         private $message;
-        public function __construct($code, $message) { $this->message = $message; }
+        public function __construct($code, $message) { $this->code = $code; $this->message = $message; }
+        public function get_error_code() { return $this->code; }
         public function get_error_message() { return $this->message; }
     }
     class WP_REST_Controller {}
@@ -97,7 +109,11 @@ namespace {
         public function insert($table, $row, $formats = []) { $this->items[] = $row; return 1; }
         public function get_col($sql) { return strpos($sql, 'DISTINCT backup_id') !== false ? $this->backup_ids : ['wp_posts', 'wp_spsync_settings']; }
         public function get_row($sql, $mode = null) { return ['wp_posts', 'CREATE TABLE `wp_posts` (`id` int)']; }
-        public function get_var($sql) { return strpos($sql, 'SHOW TABLES') === 0 ? ($this->has_tables ? 'wp_fixture' : null) : 0; }
+        public $pending_uploads = 0;
+        public function get_var($sql) {
+            if (strpos($sql, "status IN ('queued', 'uploading') AND retries < 3") !== false && strpos($sql, 'COUNT(*)') !== false) { return $this->pending_uploads; }
+            return strpos($sql, 'SHOW TABLES') === 0 ? ($this->has_tables ? 'wp_fixture' : null) : 0;
+        }
     }
     $wpdb = new TestDatabase();
 
@@ -474,6 +490,37 @@ namespace {
         verify($failed['backup_id'] === $accepted->data['backup_id'] && $failed['status'] === 'failed', 'A worker failure before queue insertion is monitorable with the accepted ID.');
         $wpdb->has_tables = false;
         Settings::set('restore_status', 'completed');
+
+        // --- One backup at a time (1.5.1) ---
+        $lock = 'SPSync\\Helpers\\BackupLock';
+        Settings::delete('backup_running');
+        delete_option('spsync_api_backup_request');
+        verify($lock::acquire('spsync-backup-a') && !$lock::acquire('spsync-backup-b'), 'Only one backup can hold the lock.');
+        Settings::set('backup_running', (string) (time() - 20 * 60));
+        verify($lock::is_held() && !$lock::acquire('spsync-backup-b'), 'A long backup 20 minutes after its last progress still counts as running.');
+        Settings::set('backup_running', (string) (time() - 2 * 3600));
+        verify($lock::is_stale() && $lock::acquire('spsync-backup-b') && $lock::current_id() === 'spsync-backup-b', 'A lock is taken over only after 30 minutes without progress.');
+        $lock::release();
+        $wpdb->pending_uploads = 40;
+        verify(BackupEngine::run() === false && !Settings::get('backup_running'), 'No new backup starts while an earlier one still has files to upload.');
+        verify(strpos((string) $lock::busy_reason(), '40 files left') !== false, 'The busy reason names the remaining uploads.');
+        $wpdb->pending_uploads = 0;
+        $before = count($scheduled);
+        $first = $second = '';
+        $nonce_allowed = true;
+        $current_user_allowed = true;
+        try { \SPSync\Admin\SettingsPage::handle_manual_backup(); } catch (\RuntimeException $redirect) { $first = $redirect->getMessage(); }
+        try { \SPSync\Admin\SettingsPage::handle_manual_backup(); } catch (\RuntimeException $redirect) { $second = $redirect->getMessage(); }
+        verify(strpos($first, 'spsync_notice=success') !== false && strpos($second, 'spsync_notice=error') !== false, 'A double click on Back up now starts one backup and refuses the second: ' . $second);
+        verify(count($scheduled) === $before + 1 && !Settings::get('backup_starting'), 'Back up now schedules exactly one background worker and returns at once.');
+        $manual_id = get_option('spsync_api_backup_request')['backup_id'];
+        $lock::acquire($manual_id);
+        $redelivered = \SPSync\Scheduler\Scheduler::run_scheduled_backup($manual_id);
+        verify($redelivered === $manual_id && get_option('spsync_api_backup_request') && (get_option('spsync_api_backup_failed')['backup_id'] ?? '') !== $manual_id,
+            'A re-delivered worker for a running backup exits without restarting or failing it.');
+        $lock::release();
+        delete_option('spsync_api_backup_request');
+
         // --- Per-site SharePoint isolation (1.4.0) ---
         $inventory = 'SPSync\\Storage\\RemoteInventory';
         verify($inventory::site_folder_name() === 'shop.example.test-store', 'Site folder defaults to the WordPress host and path.');
@@ -662,6 +709,13 @@ namespace {
         verify(\SPSync\Admin\StatusSummary::overall([])['title'] === "SharePoint can't be reached", 'A failed connection test is the headline.');
         \SPSync\Admin\StatusSummary::record_connection_test(['success' => true, 'message' => 'ok']);
         verify(\SPSync\Admin\StatusSummary::overall([])['title'] === 'Automatic backups are off', 'Manual-only sites are told automatic backups are off.');
+        verify(strpos($render(['tab' => 'backups']), 'spsync_run_manual_backup') !== false, 'Back up now is offered when nothing is running.');
+        $wpdb->pending_uploads = 12;
+        $busy_html = $render(['tab' => 'backups']);
+        verify(strpos($busy_html, 'Backup in progress') !== false && strpos($busy_html, 'spsync_run_manual_backup') === false && strpos($busy_html, '12 files left') !== false,
+            'Back up now is replaced by a disabled button and the reason while a backup is still uploading.');
+        verify(strpos($render([]), 'spsync_run_manual_backup') === false, 'The dashboard button is disabled too.');
+        $wpdb->pending_uploads = 0;
         Settings::set('backup_frequency', 'daily');
         $recent = ['id' => 'spsync-backup-x', 'time' => time() - 3600, 'files' => 3, 'uploaded' => 3, 'size' => 2048, 'state' => 'completed'];
         verify(\SPSync\Admin\StatusSummary::overall([$recent])['level'] === 'ok', 'A recent successful backup on a schedule is "protected".');

@@ -1,6 +1,7 @@
 <?php
 namespace SPSync\Backup;
 
+use SPSync\Helpers\BackupLock;
 use SPSync\Helpers\Settings;
 use SPSync\Logger\Logger;
 
@@ -10,6 +11,50 @@ if (!defined('ABSPATH')) {
 
 class BackupEngine
 {
+    /**
+     * Accept a request for a SharePoint backup and hand it to a background worker.
+     *
+     * Used by "Back up now" and the central dashboard. Only one request can be accepted at a
+     * time: the check and the reservation happen inside an atomic critical section, so a
+     * double-click or two dashboards clicking together still start a single backup.
+     *
+     * @return string|\WP_Error The accepted backup ID, or why it was refused.
+     */
+    public static function request()
+    {
+        if (!Settings::add(BackupLock::STARTING_KEY, (string) time())) {
+            $since = (string) Settings::get(BackupLock::STARTING_KEY, '');
+            if ((int) $since > time() - 60 || !Settings::replace_if(BackupLock::STARTING_KEY, $since, (string) time())) {
+                return new \WP_Error('backup_busy', 'A backup is already starting.');
+            }
+        }
+        try {
+            $pending = get_option('spsync_api_backup_request');
+            if (is_array($pending) && $pending['created_at'] <= time() - 600) {
+                delete_option('spsync_api_backup_request');
+            }
+            $reason = BackupLock::busy_reason();
+            if ($reason !== null) {
+                return new \WP_Error('backup_busy', $reason);
+            }
+            $backup_id = 'spsync-backup-' . current_time('Ymd-His');
+            if (!add_option('spsync_api_backup_request', ['backup_id' => $backup_id, 'created_at' => time()], '', false)) {
+                return new \WP_Error('backup_busy', 'A backup is already starting.');
+            }
+            $scheduled = function_exists('as_enqueue_async_action')
+                ? as_enqueue_async_action(\SPSync\Scheduler\Scheduler::EVENT_HOOK, [$backup_id])
+                : wp_schedule_single_event(time() + 2, \SPSync\Scheduler\Scheduler::EVENT_HOOK, [$backup_id]);
+            if (!$scheduled || is_wp_error($scheduled)) {
+                delete_option('spsync_api_backup_request');
+                return new \WP_Error('backup_schedule_failed', 'Could not schedule the backup worker.');
+            }
+            Logger::info('Backup request accepted; it will run in the background.', ['backup_id' => $backup_id]);
+            return $backup_id;
+        } finally {
+            Settings::delete(BackupLock::STARTING_KEY);
+        }
+    }
+
     /**
      * Start the backup process orchestration.
      *
@@ -49,25 +94,19 @@ class BackupEngine
             @ignore_user_abort(true);
         }
 
-        // Concurrency locking check
-        $lock = Settings::get('backup_running');
-        if (!empty($lock) && !$force_override) {
-            $lock_time = (int) $lock;
-            $ten_mins_ago = time() - (10 * MINUTE_IN_SECONDS);
-            if ($lock_time > $ten_mins_ago) {
-                Logger::warning('Backup abort: Another backup process is currently running.', [
-                    'lock_acquired_at' => date('Y-m-d H:i:s', $lock_time)
-                ]);
-                return false;
-            }
-            Logger::info('Stale backup lock detected and overridden.');
+        // One backup at a time. Files of an earlier backup still waiting to upload also count, so
+        // repeated clicks can never pile up parallel multi-GB backups.
+        if (!$force_override && $destination === 'sharepoint' && BackupLock::pending_uploads() > 0) {
+            Logger::warning('Backup not started: an earlier backup is still uploading to SharePoint.');
+            return false;
         }
-
-        // Set concurrency lock
-        Settings::set('backup_running', (string) time());
-
-        // Generate unique backup ID matching Phase 2 structure
         $backup_id = $requested_backup_id ?: 'spsync-backup-' . current_time('Ymd-His');
+        if (!BackupLock::acquire($backup_id, $force_override)) {
+            Logger::warning('Backup not started: another backup is currently running.', [
+                'running_backup' => BackupLock::current_id(),
+            ]);
+            return false;
+        }
         Logger::info("Initializing backup orchestrator: $backup_id");
 
         // Define local storage paths within WordPress upload folder
@@ -88,7 +127,7 @@ class BackupEngine
         $db_success = !$selection['database'] || DatabaseBackup::export($db_file);
         if (!$db_success) {
             Logger::error('Backup Failed: Database SQL export failed.');
-            Settings::delete('backup_running');
+            BackupLock::release();
             return false;
         }
 
@@ -97,7 +136,7 @@ class BackupEngine
         $scanned_files = FileScanner::scan([], $roots);
         if (empty($scanned_files) && !$selection['database']) {
             Logger::error('Backup Failed: Directory scanner found no matching assets.');
-            Settings::delete('backup_running');
+            BackupLock::release();
             return false;
         }
 
@@ -105,7 +144,7 @@ class BackupEngine
         $zip_parts = $scanned_files ? ZipBuilder::build($scanned_files, $base_dir) : [];
         if ($scanned_files && empty($zip_parts)) {
             Logger::error('Backup Failed: ZIP packaging and compression failed.');
-            Settings::delete('backup_running');
+            BackupLock::release();
             return false;
         }
 
@@ -149,12 +188,12 @@ class BackupEngine
         
         if (file_put_contents($manifest_file, $manifest_json) === false) {
             Logger::error('Backup Failed: Could not write manifest.json file.');
-            Settings::delete('backup_running');
+            BackupLock::release();
             return false;
         }
 
         if ($destination === 'device') {
-            Settings::delete('backup_running');
+            BackupLock::release();
             Logger::info('Backup created in private storage for device download.', ['backup_id' => $backup_id]);
             return $backup_id;
         }

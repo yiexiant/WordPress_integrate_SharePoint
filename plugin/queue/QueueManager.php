@@ -88,6 +88,7 @@ class QueueManager
 
         $touched = [];
         foreach ($items as $item) {
+            \SPSync\Helpers\BackupLock::heartbeat();
             SharePointStorage::upload_queue_item($item);
             $touched[$item->backup_id] = true;
         }
@@ -105,7 +106,7 @@ class QueueManager
             self::trigger_next();
         } else {
             // Release the concurrency lock
-            Settings::delete('backup_running');
+            \SPSync\Helpers\BackupLock::release();
         }
     }
 

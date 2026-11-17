@@ -75,6 +75,8 @@ class ZipBuilder
 
         // Build zip for each batch
         foreach ($batches as $index => $batch_files) {
+            // Large sites take many minutes to archive; keep the backup lock alive meanwhile.
+            \SPSync\Helpers\BackupLock::heartbeat();
             $part_num = $index + 1;
             $zip_file_path = sprintf('%s/backup_part%03d.zip', rtrim($output_dir, '/'), $part_num);
 

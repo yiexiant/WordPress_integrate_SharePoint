@@ -269,7 +269,8 @@ class SettingsPage
     }
 
     /**
-     * Handle manual backup execution trigger for instant testing.
+     * "Back up now": hand the backup to a background worker and return at once. Running it inside
+     * this request kept the browser waiting for many minutes on large sites, which invited repeat clicks.
      */
     public static function handle_manual_backup()
     {
@@ -279,12 +280,11 @@ class SettingsPage
 
         check_admin_referer('spsync_manual_backup_action');
 
-        $backup_id = \SPSync\Backup\BackupEngine::run();
-        
-        if ($backup_id) {
-            self::redirect_notice('backups', true, 'Backup created. Its files are now uploading to SharePoint in the background; the list below shows the progress.');
+        $backup_id = \SPSync\Backup\BackupEngine::request();
+        if (is_wp_error($backup_id)) {
+            self::redirect_notice('backups', false, $backup_id->get_error_message());
         }
-        self::redirect_notice('backups', false, 'The backup could not start. Another backup or restore may be running; see Activity for details.');
+        self::redirect_notice('backups', true, 'Backup started. It is created and uploaded to SharePoint in the background, so you can leave this page; the list below shows the progress.');
     }
 
     /**
@@ -298,8 +298,9 @@ class SettingsPage
 
         check_admin_referer('spsync_reset_lock_action');
 
-        Settings::delete('backup_running');
-        self::redirect_notice('dashboard', true, 'The stuck backup was cleared. You can start a new backup now.');
+        \SPSync\Helpers\BackupLock::release();
+        $reason = \SPSync\Helpers\BackupLock::busy_reason();
+        self::redirect_notice('dashboard', true, $reason === null ? 'The stuck backup was cleared. You can start a new backup now.' : 'The stuck backup was cleared. ' . $reason);
     }
 
     /**
@@ -353,7 +354,7 @@ class SettingsPage
             <?php if ($activity) : ?>
                 <div class="spsync-alert spsync-alert--<?php echo $activity['stale'] ? 'warning' : 'active'; ?>" role="status">
                     <?php if ($activity['stale']) : ?>
-                        <p><strong>A backup seems to be stuck.</strong> It started <?php echo esc_html(human_time_diff($activity['since'])); ?> ago and has not finished. If you are sure nothing is running, clear it and start again.</p>
+                        <p><strong>A backup seems to be stuck.</strong> It has shown no progress for <?php echo esc_html(human_time_diff($activity['since'])); ?>. If you are sure nothing is running, clear it. Unfinished uploads can be cancelled on the Backups screen.</p>
                         <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" data-spsync-confirm="Clear the stuck backup? Only do this if no backup is really running.">
                             <input type="hidden" name="action" value="spsync_reset_lock" />
                             <?php wp_nonce_field('spsync_reset_lock_action'); ?>

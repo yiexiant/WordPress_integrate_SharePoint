@@ -186,15 +186,18 @@ class StatusSummary
             $phases = ['downloading' => 'Preparing the backup', 'extracting' => 'Restoring files', 'restoring_database' => 'Restoring the database', 'cleanup' => 'Finishing up'];
             return ['type' => 'restore', 'label' => 'Restoring your website: ' . $phases[$restore] . '…', 'stale' => false, 'since' => null];
         }
-        $lock = (int) Settings::get('backup_running', '0');
-        if ($lock > 0) {
+        $beat = \SPSync\Helpers\BackupLock::last_beat();
+        if ($beat !== null) {
             return [
                 'type'  => 'backup',
                 'label' => 'A backup is running…',
-                'since' => $lock,
-                // BackupEngine treats locks older than 10 minutes as stale.
-                'stale' => $lock < time() - 10 * 60,
+                // Time of the last sign of progress; stale only after a long silence.
+                'since' => $beat,
+                'stale' => \SPSync\Helpers\BackupLock::is_stale(),
             ];
+        }
+        if (\SPSync\Helpers\BackupLock::request_pending()) {
+            return ['type' => 'backup', 'label' => 'Starting a backup…', 'stale' => false, 'since' => null];
         }
         return null;
     }

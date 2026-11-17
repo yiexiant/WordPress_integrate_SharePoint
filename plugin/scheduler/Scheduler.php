@@ -47,8 +47,14 @@ class Scheduler
      */
     public static function run_scheduled_backup($requested_backup_id = null)
     {
+        // Action Scheduler re-runs an action that takes longer than its timeout (5 minutes), which a
+        // multi-GB backup does. That copy must not start over or report the running job as failed.
+        if ($requested_backup_id && \SPSync\Helpers\BackupLock::current_id() === $requested_backup_id && \SPSync\Helpers\BackupLock::is_held()) {
+            Logger::info('Backup worker already running for this request; duplicate start ignored.', ['backup_id' => $requested_backup_id]);
+            return $requested_backup_id;
+        }
         Logger::info('Scheduled backup execution triggered by WP Cron.');
-        
+
         try {
             $result = BackupEngine::run(false, 'sharepoint', null, $requested_backup_id);
         } catch (\Throwable $error) {

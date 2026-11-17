@@ -373,28 +373,10 @@ class RestController extends WP_REST_Controller
      */
     public function start_backup($request)
     {
-        $pending = get_option('spsync_api_backup_request');
-        if (is_array($pending) && $pending['created_at'] <= time() - 600) {
-            delete_option('spsync_api_backup_request');
-        }
-        if (Settings::get('backup_running') || get_option('spsync_restore_start_lock') ||
-            in_array(Settings::get('restore_status'), ['downloading', 'extracting', 'restoring_database', 'cleanup'], true)) {
-            return new \WP_Error('backup_busy', 'Another backup or restoration is already running.', ['status' => 409]);
-        }
-        $backup_id = 'spsync-backup-' . current_time('Ymd-His');
-        if (!add_option('spsync_api_backup_request', ['backup_id' => $backup_id, 'created_at' => time()], '', false)) {
-            return new \WP_Error('backup_busy', 'A backup is already queued.', ['status' => 409]);
-        }
-        
-        // Trigger backup locally and enqueue upload in background
-        if (function_exists('as_enqueue_async_action')) {
-            $scheduled = as_enqueue_async_action(\SPSync\Scheduler\Scheduler::EVENT_HOOK, [$backup_id]);
-        } else {
-            $scheduled = wp_schedule_single_event(time() + 2, \SPSync\Scheduler\Scheduler::EVENT_HOOK, [$backup_id]);
-        }
-        if (!$scheduled || is_wp_error($scheduled)) {
-            delete_option('spsync_api_backup_request');
-            return new \WP_Error('backup_schedule_failed', 'Could not schedule the backup worker.', ['status' => 500]);
+        $backup_id = \SPSync\Backup\BackupEngine::request();
+        if (is_wp_error($backup_id)) {
+            $code = $backup_id->get_error_code();
+            return new \WP_Error($code, $backup_id->get_error_message(), ['status' => $code === 'backup_busy' ? 409 : 500]);
         }
 
         return new WP_REST_Response([

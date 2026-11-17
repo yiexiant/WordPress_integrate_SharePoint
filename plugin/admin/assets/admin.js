@@ -24,6 +24,11 @@
     // so the server rejects the request if the dialog was bypassed.
     document.addEventListener('submit', function (event) {
         var form = event.target;
+        // A double-click must never send the same action twice.
+        if (form.getAttribute('data-spsync-submitted')) {
+            event.preventDefault();
+            return;
+        }
         var message = form.getAttribute('data-spsync-confirm');
         if (message) {
             if (!window.confirm(message)) {
@@ -37,6 +42,9 @@
         }
         // Busy state for slow actions; deferred so the button's own value is still submitted.
         var button = event.submitter || form.querySelector('[type="submit"]');
+        if (!event.defaultPrevented) {
+            form.setAttribute('data-spsync-submitted', '1');
+        }
         if (button && !event.defaultPrevented) {
             setTimeout(function () {
                 button.disabled = true;
@@ -44,6 +52,16 @@
                     button.textContent = button.getAttribute('data-spsync-busy');
                 }
             }, 0);
+        }
+    });
+
+    // Coming back with the browser's Back button restores the page as it was left: re-arm its forms.
+    window.addEventListener('pageshow', function (event) {
+        if (event.persisted) {
+            document.querySelectorAll('[data-spsync-submitted]').forEach(function (form) {
+                form.removeAttribute('data-spsync-submitted');
+                form.querySelectorAll('[type="submit"]').forEach(function (button) { button.disabled = false; });
+            });
         }
     });
 

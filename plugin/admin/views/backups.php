@@ -13,6 +13,7 @@ if (!defined('ABSPATH')) {
 }
 
 $configured = StatusSummary::sharepoint_configured();
+$busy_reason = $configured ? \SPSync\Helpers\BackupLock::busy_reason() : null;
 $device_job_id = get_user_meta(get_current_user_id(), 'spsync_device_backup', true);
 $device_job = DeviceBackup::get($device_job_id, get_current_user_id());
 $device_expired = $device_job && $device_job['expires_at'] <= time();
@@ -25,11 +26,14 @@ $contents_label = $contents['mode'] === 'full'
     <section class="spsync-card" aria-labelledby="spsync-now-title">
         <h2 id="spsync-now-title" class="spsync-card__title">Back up to SharePoint</h2>
         <p>Saves <?php echo esc_html($contents_label); ?> to your SharePoint folder. Uploading continues in the background.</p>
-        <?php if ($configured) : ?>
+        <?php if ($configured && $busy_reason !== null) : ?>
+            <p><button type="button" class="button button-primary button-large" disabled>Backup in progress…</button></p>
+            <p class="spsync-note spsync-note--active"><?php echo esc_html($busy_reason); ?></p>
+        <?php elseif ($configured) : ?>
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                 <input type="hidden" name="action" value="spsync_run_manual_backup" />
                 <?php wp_nonce_field('spsync_manual_backup_action'); ?>
-                <button type="submit" class="button button-primary button-large" data-spsync-busy="Creating the backup…">Back up now</button>
+                <button type="submit" class="button button-primary button-large" data-spsync-busy="Starting the backup…">Back up now</button>
             </form>
         <?php else : ?>
             <p class="spsync-note">Connect SharePoint first. <a href="<?php echo esc_url(SettingsPage::url('settings', ['section' => 'sharepoint'])); ?>">Open SharePoint settings</a></p>

@@ -85,6 +85,40 @@ class Settings
     }
     
     /**
+     * Create a setting only if it does not exist yet. Atomic (the option name is the primary key),
+     * so two requests racing for the same lock can never both win.
+     *
+     * @return bool True if this call created it.
+     */
+    public static function add($name, $value)
+    {
+        global $wpdb;
+        $table = $wpdb->prefix . 'spsync_settings';
+        return (int) $wpdb->query($wpdb->prepare(
+            "INSERT IGNORE INTO $table (option_name, option_value) VALUES (%s, %s)",
+            $name,
+            (string) $value
+        )) === 1;
+    }
+
+    /**
+     * Replace a setting only while it still holds $expected (atomic compare-and-set).
+     *
+     * @return bool True if this call replaced it.
+     */
+    public static function replace_if($name, $expected, $value)
+    {
+        global $wpdb;
+        $table = $wpdb->prefix . 'spsync_settings';
+        return (int) $wpdb->query($wpdb->prepare(
+            "UPDATE $table SET option_value = %s WHERE option_name = %s AND option_value = %s",
+            (string) $value,
+            $name,
+            (string) $expected
+        )) === 1;
+    }
+
+    /**
      * Delete a setting option from the custom table.
      *
      * @param string $name Option name.

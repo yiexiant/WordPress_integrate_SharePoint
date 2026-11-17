@@ -25,11 +25,13 @@ $configured = StatusSummary::sharepoint_configured();
         <p class="spsync-hero__text"><?php echo esc_html($overall['text']); ?></p>
     </div>
     <div class="spsync-hero__actions">
-        <?php if ($configured) : ?>
+        <?php if ($configured && \SPSync\Helpers\BackupLock::busy_reason() !== null) : ?>
+            <button type="button" class="button button-primary button-hero" disabled title="<?php echo esc_attr(\SPSync\Helpers\BackupLock::busy_reason()); ?>">Backup in progress…</button>
+        <?php elseif ($configured) : ?>
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                 <input type="hidden" name="action" value="spsync_run_manual_backup" />
                 <?php wp_nonce_field('spsync_manual_backup_action'); ?>
-                <button type="submit" class="button button-primary button-hero" data-spsync-busy="Backing up…">Back up now</button>
+                <button type="submit" class="button button-primary button-hero" data-spsync-busy="Starting the backup…">Back up now</button>
             </form>
         <?php else : ?>
             <a class="button button-primary button-hero" href="<?php echo esc_url(SettingsPage::url('settings', ['section' => 'sharepoint'])); ?>">Connect SharePoint</a>
