@@ -610,6 +610,23 @@ namespace {
             'A cancelled backup sends no further chunks.');
         unlink($big);
 
+        // Already-compressed media is stored, everything else is deflated.
+        $photo = write_fixture('wp-content/uploads/2026/11/photo.JPG', random_bytes(4096));
+        $notes = write_fixture('wp-content/uploads/2026/11/notes.txt', str_repeat('backup ', 2000));
+        $zip_out = $fixture . '/zip-store-test';
+        $parts = \SPSync\Backup\ZipBuilder::build([$photo, $notes], $zip_out);
+        $zip = new \ZipArchive();
+        $zip->open($parts[0]);
+        $photo_stat = $zip->statName('wp-content/uploads/2026/11/photo.JPG');
+        $notes_stat = $zip->statName('wp-content/uploads/2026/11/notes.txt');
+        $photo_back = $zip->getFromName('wp-content/uploads/2026/11/photo.JPG');
+        $zip->close();
+        verify($photo_stat['comp_method'] === \ZipArchive::CM_STORE && $notes_stat['comp_method'] === \ZipArchive::CM_DEFLATE,
+            'Photos are stored without re-compression and text is still compressed.');
+        verify($photo_back === file_get_contents($photo), 'Stored entries restore byte for byte.');
+        array_map('unlink', array_merge($parts, [$photo, $notes]));
+        rmdir($zip_out);
+
         // --- Per-site SharePoint isolation (1.4.0) ---
         $inventory = 'SPSync\\Storage\\RemoteInventory';
         verify($inventory::site_folder_name() === 'shop.example.test-store', 'Site folder defaults to the WordPress host and path.');

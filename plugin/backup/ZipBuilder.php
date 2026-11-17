@@ -9,6 +9,20 @@ if (!defined('ABSPATH')) {
 
 class ZipBuilder
 {
+    /** Formats that are already compressed; they are stored in the archive as they are. */
+    const STORED_EXTENSIONS = [
+        'jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'heic', 'heif', 'jxl',
+        'mp4', 'm4v', 'mov', 'webm', 'mkv', 'avi', 'wmv', 'flv', 'mpg', 'mpeg',
+        'mp3', 'm4a', 'aac', 'ogg', 'oga', 'opus', 'flac', 'wma',
+        'zip', 'gz', 'tgz', 'bz2', 'xz', '7z', 'rar', 'zst', 'jar', 'wpress',
+        'woff', 'woff2', 'docx', 'xlsx', 'pptx', 'odt', 'ods', 'odp', 'epub', 'svgz',
+    ];
+
+    public static function already_compressed($name)
+    {
+        return in_array(strtolower(pathinfo((string) $name, PATHINFO_EXTENSION)), self::STORED_EXTENSIONS, true);
+    }
+
     /**
      * Compresses the scanned files into split ZIP archives based on file size sum.
      *
@@ -31,6 +45,7 @@ class ZipBuilder
         }
 
         $has_zip_archive = class_exists('\ZipArchive');
+        $can_store = $has_zip_archive && method_exists('\ZipArchive', 'setCompressionName');
         if (!$has_zip_archive) {
             if (!class_exists('PclZip')) {
                 $pclzip_file = ABSPATH . 'wp-admin/includes/class-pclzip.php';
@@ -92,6 +107,10 @@ class ZipBuilder
                         if (!$zip->addFile($filepath, $relative_name)) {
                             $complete = false;
                             break;
+                        }
+                        // Re-compressing photos, video and archives costs CPU time and saves ~nothing.
+                        if ($can_store && self::already_compressed($relative_name)) {
+                            $zip->setCompressionName($relative_name, \ZipArchive::CM_STORE);
                         }
                     }
                     $closed = $zip->close();
