@@ -1,6 +1,6 @@
 # Software Requirements Specification — WordPress SharePoint Backup Plugin
 
-Document version: 1.5.1
+Document version: 1.5.2
 Review date: 15 November 2026  
 Scope: `plugin/` source; packaged ZIP assessed separately  
 Basis: the original source plus the 1.1.0 selection/restoration and 1.2.0 manual-device/automatic-cloud workflows and regression harness. This document includes the implementation changes made on 11 November 2026.
@@ -17,7 +17,7 @@ The Laravel dashboard in `../dashboard/` and the Python SEO backend are remote b
 
 | Item | Declared or observed requirement |
 |---|---|
-| Plugin identity | WordPress SharePoint Backup Plugin; `SPSYNC_VERSION` 1.5.1 |
+| Plugin identity | WordPress SharePoint Backup Plugin; `SPSYNC_VERSION` 1.5.2 |
 | Declared compatibility | PHP 7.4+, WordPress 6.0+ in entry header; not fully compatibility-tested |
 | Database | WordPress `$wpdb` with MySQL-style SQL |
 | Archive support | ZipArchive preferred; WordPress PclZip fallback |
@@ -354,3 +354,18 @@ Causes found in source:
 Microsoft limits (Graph v1.0 documentation, checked 17 Nov 2026): simple `PUT …/content` up to 250 MB per file; upload-session requests must each be under 60 MiB and multiples of 320 KiB (except the last), with 5–10 MiB recommended and 10 MiB optimal on stable connections; fragments must be sent in order. Entra ID only issues the access token and imposes no upload size limit.
 
 Validation: 222 isolated regression checks (29 new: lock acquisition/stale takeover, pending-upload refusal, double-click on Back up now, re-delivered worker, disabled buttons, cancel paths and nonce, chunk sizing, 503/416 resume, permanent-error abort, cancellation mid-upload, CM_STORE). `QueueManager` is stubbed in the harness, so the time-boxed runner, runner lock and watchdog are verified by review only; validate them on a staging site with Action Scheduler before production.
+
+## 19. Restoring large uploaded backups in 1.5.2
+
+Field report: restoring a 2.5 GB backup ZIP from the Restore screen returned "413 Request Entity Too Large". The whole file was posted in one request, which the web server (Apache `LimitRequestBody`, LiteSpeed, nginx `client_max_body_size`, ModSecurity or a CDN) refuses before PHP runs; PHP's `upload_max_filesize`/`post_max_size` would refuse it as well.
+
+| ID | Requirement | Implementation |
+|---|---|---|
+| P-FR-43 | Accept uploaded backups of any size. | `Restore\ChunkedUpload` + `wp_ajax_spsync_restore_upload` (`manage_options`, `spsync_upload_backup` nonce, confirmation on `begin`): steps `begin`, `chunk`, `finish`, `status`, `cancel`; slices of at most 8 MB (below PHP limits minus 64 KB, filter `spsync_restore_chunk_bytes`) appended in order to private import staging |
+| P-FR-44 | Survive unreliable connections. | Browser halves the slice on 413 (minimum 256 KB) and retries network/5xx errors with back-off; the server stores a repeated slice once and answers `resync` to a gap; `begin` with the same mode, names and sizes resumes within two days |
+| P-FR-45 | Verify exactly like a normal upload. | `finish` runs `LocalBackup::unpack_archive()` (ZIP) or `LocalBackup::validate()` (folder/files), deletes rejected uploads, then the shared `start_verified_restore()` starts `ManualRestore`; the outcome is kept so a browser that lost the reply can poll `status` |
+| P-NFR-14 | Protect server disk space. | Free space checked on `begin` (ZIP: 2 × size + 256 MB; files: size + 256 MB); total capped by `spsync_restore_max_upload_bytes` (200 GiB); unfinished uploads (marker file untouched for two days) are removed; cancel deletes immediately |
+
+The classic single-request form remains as the no-JavaScript fallback and is still bounded by the server limits.
+
+Validation: 244 isolated regression checks (22 new: size parsing, slice bounds, ZIP/folder name rules, first/duplicate/gap/oversized slices, resume, ZIP and folder reassembly with full verification, corrupt-upload rejection, status after a lost reply, abandoned-upload cleanup and cancel). The browser flow (`admin.js`) is syntax-checked only; test it on staging with a multi-GB file.

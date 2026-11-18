@@ -1,6 +1,6 @@
 # WordPress SharePoint Backup Plugin
 
-Version 1.5.1. Install `schedule_backup_plugin.zip` through WordPress **Plugins → Add New → Upload Plugin**, then open **SharePoint Backup**.
+Version 1.5.2. Install `schedule_backup_plugin.zip` through WordPress **Plugins → Add New → Upload Plugin**, then open **SharePoint Backup**.
 
 > **Production rollout** (Entra ID app registration, Graph permissions, server cron, Nginx rule, verification, upgrades): see [DEPLOYMENT.md](DEPLOYMENT.md).
 
@@ -154,6 +154,16 @@ The harness uses temporary fixture files and WordPress/database stubs. It does n
 - `backup/status` adds `last_successful_backup`, `schedule` (frequency, next run), `site_folder`, `plugin_version` and `restore.error`. `health` and `system/info` add `site_url` and `site_folder`.
 - Monthly schedules stay on the chosen calendar day. Deactivation clears cron events; activation and upgrade restore them.
 - Changing the library or root folder clears cached SharePoint IDs.
+
+## Release notes — 1.5.2
+
+- **Restore backups of any size.** The Restore screen sends the backup ZIP (or a backup folder / its files) in pieces
+  of up to 8 MB, so multi-GB backups no longer fail with “413 Request Entity Too Large” or PHP upload limits.
+  Pieces shrink automatically if the server still refuses them, failed pieces are retried, and choosing the same
+  file again continues an interrupted upload. A progress bar shows speed and time left.
+- Free space in the server’s temporary folder is checked first; a ZIP needs about twice its size while it is checked.
+  Move staging to a larger folder outside the website with the `spsync_restore_temp_dir` filter if needed.
+- Unfinished uploads are deleted after two days. Filters: `spsync_restore_chunk_bytes`, `spsync_restore_max_upload_bytes`.
 
 ## Release notes — 1.5.1
 

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WordPress SharePoint Backup Plugin
  * Description: Schedule WordPress backups and upload them to SharePoint using Microsoft Graph.
- * Version: 1.5.1
+ * Version: 1.5.2
  * Author: YieXian
  * Requires PHP: 7.4
  * Requires at least: 6.0
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define Constants
-define('SPSYNC_VERSION', '1.5.1');
+define('SPSYNC_VERSION', '1.5.2');
 define('SPSYNC_PLUGIN_FILE', __FILE__);
 define('SPSYNC_PLUGIN_DIR', plugin_dir_path(__FILE__));
 
