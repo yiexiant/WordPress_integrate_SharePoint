@@ -409,3 +409,8 @@
 /* Destructive secondary action (cancel an unfinished backup). */
 .spsync .button.spsync-button-danger { color: var(--spsync-critical); border-color: var(--spsync-critical); }
 .spsync .button.spsync-button-danger:hover, .spsync .button.spsync-button-danger:focus { background: var(--spsync-critical-bg); color: var(--spsync-critical-text); border-color: var(--spsync-critical); }
+
+/* Chunked restore upload progress. */
+.spsync-upload-progress { margin: 16px 0; }
+.spsync-upload-progress progress { width: 100%; height: 12px; accent-color: var(--wp-admin-theme-color, #2271b1); }
+.spsync-upload-progress__text { margin: 8px 0 4px; font-weight: 600; font-variant-numeric: tabular-nums; }

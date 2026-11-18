@@ -174,10 +174,205 @@
                 return;
             }
             var button = document.getElementById('spsync-upload-restore-button');
+            if (chunkedUpload(event, button)) {
+                return;
+            }
             setTimeout(function () {
                 button.disabled = true;
                 button.textContent = 'Uploading and checking the backup… keep this tab open';
             }, 0);
         }, true);
+    }
+
+    /*
+     * Chunked restore upload. A multi-GB backup sent as one request is refused by the web server
+     * ("413 Request Entity Too Large") before WordPress even runs, so the file is sent in small
+     * slices that the server appends in order. Slices shrink automatically if the server still
+     * rejects them, failed slices are retried, and choosing the same file again resumes.
+     */
+    function chunkedUpload(event, button) {
+        var endpoint = upload.getAttribute('data-spsync-chunked');
+        if (!endpoint || !window.fetch || !window.FormData || !window.Blob || !Blob.prototype.slice) {
+            return false; // classic form post
+        }
+        event.preventDefault();
+        event.stopImmediatePropagation();
+
+        var MIN_CHUNK = 262144;
+        var protectedNames = ['.htaccess', 'index.php', 'web.config'];
+        var nonce = upload.querySelector('[name="_wpnonce"]').value;
+        var box = upload.querySelector('[data-spsync-progress]');
+        var bar = box.querySelector('progress');
+        var text = box.querySelector('[data-spsync-progress-text]');
+        var error = document.getElementById('spsync-upload-error');
+        var label = button.textContent;
+        var zipFile = document.getElementById('spsync-backup-zip').files[0];
+        var folderInput = document.getElementById('spsync-backup-folder');
+        var mode = zipFile ? 'zip' : 'files';
+        var files = zipFile ? [zipFile] : Array.prototype.filter.call(
+            (folderInput.files.length ? folderInput : document.getElementById('spsync-backup-files')).files,
+            function (file) { return protectedNames.indexOf(file.name) === -1; }
+        );
+        var total = files.reduce(function (sum, file) { return sum + file.size; }, 0);
+        var sent = {};
+        var chunk = 0;
+        var cancelled = false;
+        var started = Date.now();
+        var startBytes = 0;
+
+        var wait = function (ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); };
+        var mb = function (bytes) { return (bytes / 1048576).toFixed(bytes < 10485760 ? 1 : 0) + ' MB'; };
+        var sentBytes = function () { return Object.keys(sent).reduce(function (sum, name) { return sum + sent[name]; }, 0); };
+        var warnOnLeave = function (e) { e.preventDefault(); e.returnValue = ''; };
+
+        function post(fields, blob) {
+            var data = new FormData();
+            data.append('action', 'spsync_restore_upload');
+            data.append('_wpnonce', nonce);
+            Object.keys(fields).forEach(function (key) { data.append(key, fields[key]); });
+            if (blob) {
+                data.append('chunk', blob, 'chunk.bin');
+            }
+            return fetch(endpoint, { method: 'POST', body: data, credentials: 'same-origin' }).then(function (response) {
+                return response.text().then(function (body) {
+                    var json = null;
+                    try { json = JSON.parse(body); } catch (ignore) {}
+                    return { status: response.status, json: json };
+                });
+            }, function () { return { status: 0, json: null }; });
+        }
+        function message(reply, fallback) {
+            return reply.json && reply.json.data && reply.json.data.message ? reply.json.data.message : fallback;
+        }
+        function showProgress() {
+            var bytes = sentBytes();
+            var seconds = (Date.now() - started) / 1000;
+            var speed = seconds > 2 ? (bytes - startBytes) / seconds : 0;
+            var left = speed > 0 ? Math.round((total - bytes) / speed) : 0;
+            bar.value = total ? Math.floor(bytes / total * 100) : 0;
+            text.textContent = 'Uploading ' + mb(bytes) + ' of ' + mb(total) + ' (' + bar.value + '%)' +
+                (speed > 0 ? ' · ' + mb(speed) + '/s · about ' + (left > 90 ? Math.round(left / 60) + ' min' : left + ' s') + ' left' : '');
+        }
+        async function begin() {
+            var reply = await post({
+                step: 'begin',
+                mode: mode,
+                confirm_restore: '1',
+                files: JSON.stringify(files.map(function (file) { return { name: file.name, size: file.size }; }))
+            });
+            if (!reply.json || !reply.json.success) {
+                throw new Error(message(reply, 'The upload could not start (HTTP ' + reply.status + ').'));
+            }
+            return reply.json.data;
+        }
+        async function sendFile(file) {
+            var failures = 0;
+            while (sent[file.name] < file.size) {
+                if (cancelled) {
+                    throw new Error('cancelled');
+                }
+                var offset = sent[file.name];
+                var reply = await post({ step: 'chunk', name: file.name, offset: offset }, file.slice(offset, Math.min(offset + chunk, file.size)));
+                if (reply.status === 413) {
+                    if (chunk <= MIN_CHUNK) {
+                        throw new Error('The web server refuses even small upload pieces (HTTP 413). Ask your host to allow requests of at least 1 MB.');
+                    }
+                    chunk = Math.max(MIN_CHUNK, Math.floor(chunk / 2));
+                    continue;
+                }
+                if (reply.json && reply.json.success) {
+                    sent[file.name] = reply.json.data.received;
+                    failures = 0;
+                    showProgress();
+                    continue;
+                }
+                var code = reply.json && reply.json.data ? reply.json.data.code : '';
+                if (code === 'resync') {
+                    sent = (await begin()).received;
+                    continue;
+                }
+                if (reply.json && reply.status >= 400 && reply.status < 500 && !(reply.json.data && reply.json.data.retry)) {
+                    throw new Error(message(reply, 'The upload was refused.'));
+                }
+                // Network error, server error or an incomplete piece: wait and send it again.
+                if (++failures > 6) {
+                    throw new Error('The connection to the server keeps failing. Check your connection, then choose the same file again to continue where it stopped.');
+                }
+                text.textContent = 'Connection problem; trying again…';
+                await wait(Math.min(30000, 1000 * Math.pow(2, failures)));
+            }
+        }
+        async function finish() {
+            bar.removeAttribute('value');
+            text.textContent = 'Upload complete. Checking the backup… a large backup can take several minutes.';
+            var reply = await post({ step: 'finish' });
+            if (reply.json && reply.json.success) {
+                return reply.json.data.redirect;
+            }
+            if (reply.json && reply.status === 400) {
+                throw new Error(message(reply, 'The backup could not be verified.'));
+            }
+            // The reply was lost (for example a proxy timeout) while the server keeps checking: ask for the result.
+            for (var tries = 0; tries < 720; tries++) {
+                await wait(5000);
+                var status = await post({ step: 'status' });
+                var state = status.json && status.json.success ? status.json.data : null;
+                if (!state || state.phase === 'verifying' || state.phase === 'verified') {
+                    continue;
+                }
+                if (state.redirect) {
+                    return state.redirect;
+                }
+                if (state.phase === 'failed') {
+                    throw new Error(state.message || 'The backup could not be verified.');
+                }
+                return window.location.href;
+            }
+            throw new Error('The server is taking unusually long to check the backup. Reload this page later to see the result.');
+        }
+        function reset(failure) {
+            window.removeEventListener('beforeunload', warnOnLeave);
+            button.disabled = false;
+            button.textContent = label;
+            box.hidden = true;
+            if (failure) {
+                error.textContent = failure;
+                error.hidden = false;
+            }
+        }
+
+        box.querySelector('[data-spsync-cancel-upload]').onclick = function () {
+            if (window.confirm('Stop the upload and delete what was sent so far?')) {
+                cancelled = true;
+                post({ step: 'cancel' });
+            }
+        };
+        error.hidden = true;
+        button.disabled = true;
+        button.textContent = 'Uploading… keep this tab open';
+        box.hidden = false;
+        bar.value = 0;
+        text.textContent = 'Preparing the upload…';
+        window.addEventListener('beforeunload', warnOnLeave);
+
+        (async function () {
+            var info = await begin();
+            chunk = info.chunk_bytes;
+            sent = info.received;
+            startBytes = sentBytes();
+            started = Date.now();
+            if (info.resumed && startBytes > 0) {
+                text.textContent = 'Continuing the earlier upload from ' + mb(startBytes) + '…';
+            }
+            for (var i = 0; i < files.length; i++) {
+                await sendFile(files[i]);
+            }
+            var redirect = await finish();
+            window.removeEventListener('beforeunload', warnOnLeave);
+            window.location.href = redirect;
+        }()).catch(function (failure) {
+            reset(cancelled ? 'Upload cancelled.' : failure.message);
+        });
+        return true;
     }
 }());

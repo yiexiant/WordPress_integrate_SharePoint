@@ -32,6 +32,18 @@ class PrivateStorage
         return $parent && $resolved && is_dir($resolved) && dirname($resolved) === $parent;
     }
 
+    /** @return string[] Existing private directories of this kind. */
+    public static function directories($kind)
+    {
+        $parent = self::parent_directory();
+        if (!$parent || !in_array($kind, ['import', 'download'], true)) {
+            return [];
+        }
+        return array_values(array_filter((array) glob($parent . '/spsync-' . $kind . '-*', GLOB_ONLYDIR), function ($directory) use ($kind) {
+            return self::valid($directory, $kind);
+        }));
+    }
+
     public static function remove($directory, $kind)
     {
         if (!self::valid($directory, $kind)) {

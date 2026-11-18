@@ -58,13 +58,14 @@ $running = in_array($restore_status, StatusSummary::ACTIVE_RESTORE, true);
         <p class="spsync-note spsync-note--active"><span class="spsync-spinner" aria-hidden="true"></span> A restore is running. Wait until it finishes.</p>
     <?php endif; ?>
 
-    <form id="spsync-upload-restore-form" method="post" enctype="multipart/form-data" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+    <form id="spsync-upload-restore-form" method="post" enctype="multipart/form-data" action="<?php echo esc_url(admin_url('admin-post.php')); ?>"
+          data-spsync-chunked="<?php echo esc_url(admin_url('admin-ajax.php')); ?>">
         <input type="hidden" name="action" value="spsync_upload_backup" />
         <?php wp_nonce_field('spsync_upload_backup'); ?>
 
         <label class="spsync-drop" for="spsync-backup-zip">
             <span class="spsync-drop__title">Choose a backup ZIP</span>
-            <span class="spsync-drop__hint">or drag it here · up to <?php echo esc_html(size_format(wp_max_upload_size())); ?></span>
+            <span class="spsync-drop__hint">or drag it here · any size: large backups are sent in small pieces</span>
             <span class="spsync-drop__file" data-spsync-filename></span>
             <input id="spsync-backup-zip" type="file" name="backup_zip" accept=".zip,application/zip" />
         </label>
@@ -73,7 +74,7 @@ $running = in_array($restore_status, StatusSummary::ACTIVE_RESTORE, true);
             <summary>Other ways to upload (an unzipped backup folder or its files)</summary>
             <p><label for="spsync-backup-folder"><strong>Backup folder</strong></label><br /><input id="spsync-backup-folder" type="file" name="backup_folder[]" webkitdirectory directory multiple /></p>
             <p><label for="spsync-backup-files"><strong>Individual backup files</strong> (manifest.json, database.sql, backup_part*.zip)</label><br /><input id="spsync-backup-files" type="file" name="backup_files[]" accept=".json,.sql,.zip" multiple /></p>
-            <p class="spsync-muted spsync-small">Server limits: <?php echo esc_html(size_format(wp_max_upload_size())); ?> per file, <?php echo esc_html(ini_get('post_max_size')); ?> per upload, <?php echo esc_html(ini_get('max_file_uploads')); ?> files.</p>
+            <p class="spsync-muted spsync-small">Files are sent in pieces, so the server’s upload limit (<?php echo esc_html(size_format(wp_max_upload_size())); ?>) does not apply. Without JavaScript the limit is <?php echo esc_html(size_format(wp_max_upload_size())); ?> per file and <?php echo esc_html(ini_get('post_max_size')); ?> per upload.</p>
         </details>
 
         <div class="spsync-warning-box">
@@ -86,6 +87,12 @@ $running = in_array($restore_status, StatusSummary::ACTIVE_RESTORE, true);
             <label class="spsync-check"><input type="checkbox" name="confirm_restore" value="1" required /> I understand that restoring replaces this website’s files and database.</label>
         </div>
 
+        <div class="spsync-upload-progress" data-spsync-progress hidden>
+            <progress max="100" value="0" aria-label="Upload progress"></progress>
+            <p class="spsync-upload-progress__text" data-spsync-progress-text aria-live="polite"></p>
+            <p class="spsync-muted spsync-small">Keep this tab open. If the upload is interrupted, choose the same file again: it continues where it stopped.</p>
+            <button type="button" class="button-link spsync-link-muted" data-spsync-cancel-upload>Cancel upload</button>
+        </div>
         <p id="spsync-upload-error" class="spsync-error" role="alert" hidden></p>
         <p class="spsync-actions">
             <button id="spsync-upload-restore-button" type="submit" class="button button-primary button-large" <?php disabled($running); ?>>Upload, Verify &amp; Restore</button>

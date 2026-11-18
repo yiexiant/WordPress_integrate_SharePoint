@@ -24,6 +24,7 @@ class SettingsPage
         add_action('admin_post_spsync_cancel_backup', [__CLASS__, 'handle_cancel_backup']);
         add_action('admin_post_spsync_save_contents', [__CLASS__, 'handle_save_contents']);
         add_action('admin_post_spsync_upload_backup', [__CLASS__, 'handle_upload_backup']);
+        add_action('wp_ajax_spsync_restore_upload', [__CLASS__, 'handle_chunked_upload']);
         add_action('admin_post_spsync_restore_uploaded', [__CLASS__, 'handle_restore_uploaded']);
         add_action('admin_post_spsync_discard_upload', [__CLASS__, 'handle_discard_upload']);
         add_action('admin_post_spsync_create_device_backup', [__CLASS__, 'handle_device_backup']);
@@ -118,13 +119,18 @@ class SettingsPage
 
     private static function redirect_notice($tab, $success, $message)
     {
-        wp_safe_redirect(add_query_arg([
+        wp_safe_redirect(self::notice_url($tab, $success, $message));
+        exit;
+    }
+
+    private static function notice_url($tab, $success, $message)
+    {
+        return add_query_arg([
             'page' => self::MENU_SLUG,
             'tab' => $tab,
             'spsync_notice' => $success ? 'success' : 'error',
             'spsync_msg' => $message,
-        ], admin_url('admin.php')));
-        exit;
+        ], admin_url('admin.php'));
     }
 
     public static function handle_save_contents()
@@ -152,18 +158,101 @@ class SettingsPage
         if (is_wp_error($result)) {
             self::redirect_notice('restore', false, $result->get_error_message());
         }
+        [$success, $message] = self::start_verified_restore($result['directory']);
+        self::redirect_notice('restore', $success, $message);
+    }
+
+    /**
+     * A verified upload is waiting in $directory: keep it as the user's pending import and start restoring.
+     *
+     * @return array{0:bool,1:string} [started, message for the administrator]
+     */
+    private static function start_verified_restore($directory)
+    {
         $old = get_user_meta(get_current_user_id(), 'spsync_pending_import', true);
-        if ($old && $old !== \SPSync\Helpers\Settings::get('manual_restore_directory')) {
+        if ($old && $old !== $directory && $old !== Settings::get('manual_restore_directory')) {
             \SPSync\Restore\LocalBackup::remove($old);
         }
-        update_user_meta(get_current_user_id(), 'spsync_pending_import', $result['directory']);
-        $started = \SPSync\Restore\ManualRestore::start($result['directory']);
+        update_user_meta(get_current_user_id(), 'spsync_pending_import', $directory);
+        $started = \SPSync\Restore\ManualRestore::start($directory);
         if (is_wp_error($started)) {
-            self::redirect_notice('restore', false, 'Backup verified, but restoration could not start: ' . $started->get_error_message() . ' The verified upload is retained below so you can retry without uploading again.');
+            return [false, 'Backup verified, but restoration could not start: ' . $started->get_error_message() . ' The verified upload is retained below so you can retry without uploading again.'];
         }
         delete_user_meta(get_current_user_id(), 'spsync_pending_import');
         \SPSync\Restore\ManualRestore::dispatch_after_response($started);
-        self::redirect_notice('restore', true, 'Backup verified. Restoration is starting automatically; no second confirmation is needed. Refresh this page for status.');
+        return [true, 'Backup verified. Restoration is starting automatically; no second confirmation is needed. Refresh this page for status.'];
+    }
+
+    /**
+     * Chunked restore upload (admin-ajax): begin | chunk | finish | status | cancel.
+     * Lets backups of any size through web servers that reject large requests (HTTP 413).
+     */
+    public static function handle_chunked_upload()
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => 'You do not have permission to manage backups.'], 403);
+        }
+        if (!check_ajax_referer('spsync_upload_backup', '_wpnonce', false)) {
+            wp_send_json_error(['message' => 'Your session expired. Reload the page and choose the file again; the upload continues where it stopped.'], 403);
+        }
+        $user = get_current_user_id();
+        $step = isset($_POST['step']) && is_string($_POST['step']) ? $_POST['step'] : '';
+        $upload = '\SPSync\Restore\ChunkedUpload';
+
+        switch ($step) {
+            case 'begin':
+                if (empty($_POST['confirm_restore'])) {
+                    wp_send_json_error(['message' => 'Confirm that you want to overwrite the website before uploading and restoring the backup.'], 400);
+                }
+                $files = isset($_POST['files']) && is_string($_POST['files']) ? json_decode(wp_unslash($_POST['files']), true) : null;
+                $mode = isset($_POST['mode']) && is_string($_POST['mode']) ? $_POST['mode'] : '';
+                $result = $upload::begin($user, $mode, $files);
+                break;
+
+            case 'chunk':
+                $chunk = isset($_FILES['chunk']) && is_array($_FILES['chunk']) ? $_FILES['chunk'] : null;
+                if (!$chunk || ($chunk['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK || !is_uploaded_file($chunk['tmp_name'])) {
+                    wp_send_json_error(['message' => 'A piece of the upload did not arrive completely.', 'retry' => true], 400);
+                }
+                $name = isset($_POST['name']) && is_string($_POST['name']) ? wp_unslash($_POST['name']) : '';
+                $offset = isset($_POST['offset']) && is_numeric($_POST['offset']) ? (int) $_POST['offset'] : -1;
+                $received = $upload::append($user, $name, $offset, $chunk['tmp_name']);
+                $result = is_wp_error($received) ? $received : ['received' => $received];
+                break;
+
+            case 'finish':
+                ignore_user_abort(true);
+                if (function_exists('set_time_limit')) {
+                    @set_time_limit(0);
+                }
+                $verified = $upload::finish($user);
+                if (is_wp_error($verified)) {
+                    $result = $verified;
+                    break;
+                }
+                [$success, $message] = self::start_verified_restore($verified['directory']);
+                $redirect = self::notice_url('restore', $success, $message);
+                $upload::complete($user, $success, $message, $redirect);
+                $result = ['redirect' => $redirect];
+                break;
+
+            case 'status':
+                $result = $upload::status($user);
+                break;
+
+            case 'cancel':
+                $upload::discard($user);
+                $result = ['cancelled' => true];
+                break;
+
+            default:
+                $result = new \WP_Error('invalid_step', 'Unknown upload step.');
+        }
+
+        if (is_wp_error($result)) {
+            wp_send_json_error(['message' => $result->get_error_message(), 'code' => $result->get_error_code()], 400);
+        }
+        wp_send_json_success($result);
     }
 
     public static function handle_restore_uploaded()

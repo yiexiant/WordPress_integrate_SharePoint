@@ -627,6 +627,85 @@ namespace {
         array_map('unlink', array_merge($parts, [$photo, $notes]));
         rmdir($zip_out);
 
+        // --- Chunked restore upload: backups larger than the web server's request limit (1.5.2) ---
+        $chunked = 'SPSync\\Restore\\ChunkedUpload';
+        verify($chunked::ini_bytes('64M') === 67108864 && $chunked::ini_bytes('2G') === 2147483648 && $chunked::ini_bytes('512K') === 524288 && $chunked::ini_bytes('-1') === PHP_INT_MAX,
+            'PHP size settings are parsed.');
+        verify($chunked::chunk_bytes() <= 8 * 1048576 && $chunked::chunk_bytes() >= 262144, 'Pieces stay small enough for common server limits.');
+        $source = staging(['wp-content/uploads/restored.txt' => str_repeat('restored ', 50000)], "INSERT INTO `wp_posts` VALUES (7);\n");
+        $staging_directories[] = $source;
+        $package = $fixture . '/large-backup.zip';
+        archive($package, [
+            'spsync-backup-test/manifest.json'      => file_get_contents($source . '/manifest.json'),
+            'spsync-backup-test/backup_part001.zip' => file_get_contents($source . '/backup_part001.zip'),
+            'spsync-backup-test/database.sql'       => file_get_contents($source . '/database.sql'),
+        ]);
+        $bytes = file_get_contents($package);
+        $size = strlen($bytes);
+        $slice = function ($from, $length) use ($bytes, $fixture) {
+            $path = $fixture . '/slice.bin';
+            file_put_contents($path, substr($bytes, $from, $length));
+            return $path;
+        };
+        Settings::set('restore_status', 'completed');
+        verify(is_wp_error($chunked::begin(1, 'zip', [['name' => 'site.tar', 'size' => 10]])), 'Only ZIP files are accepted in ZIP mode.');
+        verify(is_wp_error($chunked::begin(1, 'files', [['name' => 'backup_part001.zip', 'size' => 10]])), 'A folder upload needs its manifest.json.');
+        verify(is_wp_error($chunked::begin(1, 'files', [['name' => 'manifest.json', 'size' => 1], ['name' => 'evil.php', 'size' => 1]])), 'Unexpected files are refused before any byte is sent.');
+        $plan = [['name' => 'craftex-backup.zip', 'size' => $size]];
+        $begun = $chunked::begin(1, 'zip', $plan);
+        verify(is_array($begun) && $begun['received'] === ['craftex-backup.zip' => 0] && !$begun['resumed'], 'An upload starts at byte 0.');
+        $piece = (int) ceil($size / 3);
+        verify($chunked::append(1, 'craftex-backup.zip', 0, $slice(0, $piece)) === $piece, 'The first piece is stored.');
+        verify($chunked::append(1, 'craftex-backup.zip', 0, $slice(0, $piece)) === $piece, 'A piece sent twice (lost reply) is not written twice.');
+        $gap = $chunked::append(1, 'craftex-backup.zip', 2 * $piece, $slice(2 * $piece, $piece));
+        verify(is_wp_error($gap) && $gap->get_error_code() === 'resync', 'A piece that skips ahead is refused and the browser resynchronises.');
+        verify(is_wp_error($chunked::append(1, 'craftex-backup.zip', $piece, $slice(0, $size))), 'A piece running past the announced size is refused.');
+        verify(is_wp_error($chunked::finish(1)), 'An incomplete upload cannot be finished.');
+        $resumed = $chunked::begin(1, 'zip', $plan);
+        verify($resumed['resumed'] && $resumed['received'] === ['craftex-backup.zip' => $piece], 'Choosing the same file again resumes after the stored bytes.');
+        $chunked::append(1, 'craftex-backup.zip', $piece, $slice($piece, $piece));
+        $chunked::append(1, 'craftex-backup.zip', 2 * $piece, $slice(2 * $piece, $size - 2 * $piece));
+        $verified = $chunked::finish(1);
+        verify(is_array($verified) && $verified['manifest']['backup_id'] === 'spsync-backup-test' && LocalBackup::is_staging_directory($verified['directory']),
+            'The reassembled ZIP is unpacked and verified like a normal upload: ' . (is_wp_error($verified) ? $verified->get_error_message() : ''));
+        verify(!file_exists($verified['directory'] . '/' . $chunked::ARCHIVE) && !is_wp_error(LocalBackup::validate($verified['directory'])),
+            'Only the verified backup parts remain in private staging.');
+        $staging_directories[] = $verified['directory'];
+        $chunked::complete(1, true, 'Restoring', '/wp-admin/admin.php?tab=restore');
+        verify($chunked::status(1)['phase'] === 'done' && $chunked::status(1)['redirect'] !== '', 'A browser that lost the finish reply can still learn the result.');
+
+        $chunked::begin(1, 'zip', $plan);
+        $corrupt = str_repeat('x', $size);
+        file_put_contents($fixture . '/slice.bin', $corrupt);
+        $chunked::append(1, 'craftex-backup.zip', 0, $fixture . '/slice.bin');
+        $state = get_user_meta(1, $chunked::META, true);
+        verify(is_wp_error($chunked::finish(1)) && !is_dir($state['directory']) && $chunked::status(1)['phase'] === 'failed', 'A corrupt upload is rejected and deleted.');
+
+        $folder_plan = [];
+        foreach (['manifest.json', 'backup_part001.zip', 'database.sql'] as $name) {
+            $folder_plan[] = ['name' => $name, 'size' => filesize($source . '/' . $name)];
+        }
+        $chunked::begin(1, 'files', $folder_plan);
+        foreach ($folder_plan as $file) {
+            verify($chunked::append(1, $file['name'], 0, $source . '/' . $file['name']) === $file['size'], 'Folder file stored: ' . $file['name']);
+        }
+        $verified = $chunked::finish(1);
+        verify(is_array($verified) && $verified['manifest']['backup_id'] === 'spsync-backup-test', 'An uploaded backup folder is verified in pieces too.');
+        $staging_directories[] = $verified['directory'];
+
+        $chunked::begin(1, 'zip', $plan);
+        $abandoned = get_user_meta(1, $chunked::META, true)['directory'];
+        delete_user_meta(1, $chunked::META);
+        touch($abandoned . '/' . $chunked::MARKER, time() - 3 * DAY_IN_SECONDS);
+        $chunked::cleanup_abandoned(1);
+        verify(!is_dir($abandoned), 'Unfinished uploads untouched for two days are deleted.');
+        $chunked::begin(1, 'zip', $plan);
+        $discarded = get_user_meta(1, $chunked::META, true)['directory'];
+        $chunked::discard(1);
+        verify(!is_dir($discarded) && $chunked::status(1)['phase'] === 'none', 'Cancelling an upload deletes what was sent.');
+        @unlink($fixture . '/slice.bin');
+        @unlink($package);
+
         // --- Per-site SharePoint isolation (1.4.0) ---
         $inventory = 'SPSync\\Storage\\RemoteInventory';
         verify($inventory::site_folder_name() === 'shop.example.test-store', 'Site folder defaults to the WordPress host and path.');
