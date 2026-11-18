@@ -50,16 +50,16 @@ Central dashboard ── HTTPS + X-SPSYNC-KEY ──► plugin REST API (?rest_r
 
 ## 2. Requirements
 
-| Item | Requirement |
-|---|---|
-| WordPress | 6.0 or newer, single site (multisite networks are not supported) |
-| PHP | 7.4 or newer (tested on 8.3) |
-| PHP extensions | `openssl` (required: encrypts the client secret and talks to Microsoft), `curl`, `zip` (recommended; WordPress's PclZip is a slower fallback), `json`, `mysqli` |
-| Outbound HTTPS | `login.microsoftonline.com` and `graph.microsoft.com` (port 443), plus SharePoint download hosts (`*.sharepoint.com`) for restores |
-| Disk space | At least **2–3× the site size** free: database dump + ZIP parts while uploading, more during a restore (downloaded backup + safety snapshot) |
-| PHP limits | `memory_limit` ≥ 256M, `max_execution_time` 300+ (or 0 for CLI cron); for uploads on the **Restore** screen, `upload_max_filesize`/`post_max_size` larger than the backup ZIP |
-| Temp directory | A writable directory **outside** the WordPress folder and web root, for manual restores and device downloads (defaults to the system temp directory) |
-| Microsoft 365 | A SharePoint Online site and an Entra ID account that can register apps and grant admin consent |
+| Item           | Requirement                                                                                                                                                                   |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| WordPress      | 6.0 or newer, single site (multisite networks are not supported)                                                                                                              |
+| PHP            | 7.4 or newer (tested on 8.3)                                                                                                                                                  |
+| PHP extensions | `openssl` (required: encrypts the client secret and talks to Microsoft), `curl`, `zip` (recommended; WordPress's PclZip is a slower fallback), `json`, `mysqli`               |
+| Outbound HTTPS | `login.microsoftonline.com` and `graph.microsoft.com` (port 443), plus SharePoint download hosts (`*.sharepoint.com`) for restores                                            |
+| Disk space     | At least **2–3× the site size** free: database dump + ZIP parts while uploading, more during a restore (downloaded backup + safety snapshot)                                  |
+| PHP limits     | `memory_limit` ≥ 256M, `max_execution_time` 300+ (or 0 for CLI cron); for uploads on the **Restore** screen, `upload_max_filesize`/`post_max_size` larger than the backup ZIP |
+| Temp directory | A writable directory **outside** the WordPress folder and web root, for manual restores and device downloads (defaults to the system temp directory)                          |
+| Microsoft 365  | A SharePoint Online site and an Entra ID account that can register apps and grant admin consent                                                                               |
 
 ---
 
